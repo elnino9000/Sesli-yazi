@@ -64,12 +64,16 @@ public class MicService extends AccessibilityService {
         super.onServiceConnected();
         wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         buildBubble();
+        toast("Sesli Yazı hazır");
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        // Klavye bazen gecikmeli açılır: birkaç kez tekrar kontrol et
         handler.removeCallbacks(updateRun);
         handler.postDelayed(updateRun, 120);
+        handler.postDelayed(updateRun, 600);
+        handler.postDelayed(updateRun, 1500);
     }
 
     @Override
@@ -149,10 +153,14 @@ public class MicService extends AccessibilityService {
 
     // ------------------------------------------------- klavye / kutu takibi
 
+    private static final int KB_UNKNOWN = -2;
+    private boolean errorShown = false;
+
+    /** Klavyenin ekrandaki üst kenarı. -1: klavye kapalı, -2: telefon bilgi vermiyor. */
     private int keyboardTop() {
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
-            if (windows == null) return -1;
+            if (windows == null || windows.isEmpty()) return KB_UNKNOWN;
             for (AccessibilityWindowInfo w : windows) {
                 if (w.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
                     Rect r = new Rect();
@@ -160,45 +168,63 @@ public class MicService extends AccessibilityService {
                     if (r.height() > 0) return r.top;
                 }
             }
-        } catch (Exception ignored) { }
-        return -1;
+            return -1;
+        } catch (Exception e) {
+            return KB_UNKNOWN;
+        }
     }
 
     private AccessibilityNodeInfo findInput() {
         try {
             AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) return null;
-            return root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        } catch (Exception e) {
-            return null;
-        }
+            if (root != null) {
+                AccessibilityNodeInfo n = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                if (n != null) return n;
+            }
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows != null) {
+                for (AccessibilityWindowInfo w : windows) {
+                    AccessibilityNodeInfo r = w.getRoot();
+                    if (r == null) continue;
+                    AccessibilityNodeInfo n = r.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                    if (n != null) return n;
+                }
+            }
+        } catch (Exception ignored) { }
+        return null;
     }
 
     private void safeUpdate() {
         try {
             update();
-        } catch (Exception ignored) { }
+        } catch (Exception e) {
+            if (!errorShown) {
+                errorShown = true;
+                toast("Sesli Yazı hata: " + e);
+            }
+        }
     }
 
     private void update() {
-        int kbTop = keyboardTop();
-        if (kbTop < 0) {
+        int kb = keyboardTop();
+        AccessibilityNodeInfo f = findInput();
+        boolean editable = f != null && f.isEditable();
+
+        if (f != null && f.isPassword()) {
             endListening(true);
             hide();
             return;
         }
-        if (listening) {
-            // Dinlerken simge yerinde kalsın
-            show(kbTop);
+
+        // Klavye açıksa simge çıkar. Telefon klavye bilgisi vermiyorsa, odakta yazı kutusu varsa çıkar.
+        boolean visible = kb >= 0 || (kb == KB_UNKNOWN && editable);
+        if (!visible) {
+            endListening(true);
+            hide();
             return;
         }
-        AccessibilityNodeInfo f = findInput();
-        boolean ok = f != null && f.isEditable() && !f.isPassword();
-        if (ok) {
-            show(kbTop);
-        } else {
-            hide();
-        }
+        int top = kb >= 0 ? kb : getResources().getDisplayMetrics().heightPixels * 55 / 100;
+        show(top);
     }
 
     // ---------------------------------------------------------- dinleme
@@ -227,7 +253,10 @@ public class MicService extends AccessibilityService {
 
     private void startListening() {
         AccessibilityNodeInfo f = findInput();
-        if (f == null || !f.isEditable()) return;
+        if (f == null) {
+            toast("Yazı kutusu bulunamadı. Kutuya bir kez daha dokunup tekrar dene");
+            return;
+        }
         target = f;
 
         CharSequence t = f.getText();
