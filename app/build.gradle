@@ -8,6 +8,16 @@ android {
     namespace 'com.elnino.sesliyazi'
     compileSdk 34
 
+    // Her derlemede aynı imza kullanılsın: güncellemeler eskisinin üstüne kurulabilsin
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
     defaultConfig {
         applicationId 'com.elnino.sesliyazi'
         minSdk 24
