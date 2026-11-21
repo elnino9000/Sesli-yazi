@@ -23,12 +23,23 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Türkçe kelime listesini indir
+      - name: Türkçe metin indir ve dil modeli üret
         run: |
-          mkdir -p app/src/main/assets
-          curl -fsSL https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/tr/tr_50k.txt \
-            | awk '{print $1}' | grep -E '^[a-zçğıöşüâîû]{2,}$' | head -n 35000 > app/src/main/assets/words_tr.txt || true
-          wc -l app/src/main/assets/words_tr.txt || true
+          mkdir -p app/src/main/assets work
+          timeout 300 curl -fsSL https://downloads.tatoeba.org/exports/per_language/tur/tur_sentences.tsv.bz2 \
+            | bzcat | cut -f3 > work/tatoeba.txt || true
+          timeout 600 curl -fsSL https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/tr.txt.gz \
+            | gunzip -c | head -n 8000000 > work/subs.txt || true
+          wc -l work/tatoeba.txt work/subs.txt || true
+          cat work/tatoeba.txt work/subs.txt > work/corpus.txt 2>/dev/null || true
+          if [ "$(wc -l < work/corpus.txt)" -gt 1000 ]; then
+            python3 scripts/build_lm.py work/corpus.txt app/src/main/assets
+          else
+            echo "Metin indirilemedi, yedek sözlük kullanılıyor"
+            curl -fsSL https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/tr/tr_50k.txt \
+              | awk '{print $1"\t"$2}' | grep -E '^[a-zçğıöşüâîû]{2,}\t' | head -n 35000 > app/src/main/assets/words_tr.txt || true
+          fi
+          ls -la app/src/main/assets || true
 
       - name: APK derle
         run: gradle assembleDebug --no-daemon

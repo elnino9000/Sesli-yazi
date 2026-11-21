@@ -146,11 +146,24 @@ public class VoiceIME extends InputMethodService {
       + "düşünüyorum sanırım galiba herhalde muhtemelen kesinlikle mutlaka aynen katılıyorum tamamdır "
       + "olsun neyse hadi haydi dikkat acaba sizce bence nedir neden niye nasılsınız iyiyim iyiyiz";
 
-    private final java.util.HashMap<String, Integer> words = new java.util.HashMap<String, Integer>();  // sözlük (taban puan)
-    private final java.util.HashMap<String, Integer> own = new java.util.HashMap<String, Integer>();    // senin yazdıkların
-    private final java.util.HashMap<String, Integer> pairs = new java.util.HashMap<String, Integer>();  // "önceki>sonraki"
+    // ---- statik dil modeli (derleme sırasında büyük Türkçe metinden üretilir)
+    private volatile java.util.HashMap<String, Integer> words = new java.util.HashMap<String, Integer>();
+    private volatile java.util.HashMap<String, String> lmBi = new java.util.HashMap<String, String>();
+    private volatile java.util.HashMap<String, String> lmTri = new java.util.HashMap<String, String>();
+    private volatile String[] vocab = new String[0];     // sıralı, önek araması için
+    private double uniLog = 1;
+    private volatile boolean lmReady = false;
+
+    // ---- kişisel öğrenme (senin yazdıkların)
+    private final java.util.HashMap<String, Integer> own = new java.util.HashMap<String, Integer>();
+    private final java.util.HashMap<String, Integer> pairs = new java.util.HashMap<String, Integer>();   // "a>b"
+    private final java.util.HashMap<String, Integer> triples = new java.util.HashMap<String, Integer>(); // "a b>c"
+    private final java.util.HashMap<String, Integer> ctxTot = new java.util.HashMap<String, Integer>();  // bağlam toplamları
+    private int ownMax = 1;
+
     private final StringBuilder cur = new StringBuilder();
     private String prev = "";
+    private String prev2 = "";
     private int learnCount = 0;
     private long lastOwn = 0;
     private final Locale TR = new Locale("tr", "TR");
@@ -161,68 +174,135 @@ public class VoiceIME extends InputMethodService {
         return true;
     }
 
-    private void loadWords() {
-        words.clear();
-        own.clear();
-        pairs.clear();
-        for (String w : BUILTIN.split(" ")) {
-            if (w.length() > 0) words.put(w, 3);
-        }
-        // Derleme sırasında indirilen büyük Türkçe kelime listesi (varsa)
-        try {
-            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(
-                    getAssets().open("words_tr.txt"), "UTF-8"));
-            String line;
-            int rank = 0;
-            while ((line = r.readLine()) != null) {
-                String w = line.trim();
-                if (!isWord(w)) continue;
-                rank++;
-                int base = rank < 400 ? 3 : (rank < 4000 ? 2 : 1);
-                Integer old = words.get(w);
-                if (old == null || old < base) words.put(w, base);
-            }
-            r.close();
-        } catch (Exception ignored) { }
-
+    private void loadPersonal() {
+        own.clear(); pairs.clear(); triples.clear(); ctxTot.clear();
         SharedPreferences sp = getSharedPreferences("sesli", MODE_PRIVATE);
         for (String e : sp.getString("own", "").split(",")) {
             int i = e.lastIndexOf(':');
             if (i <= 0) continue;
             try {
-                String w = e.substring(0, i);
-                own.put(w, Integer.parseInt(e.substring(i + 1)));
-                if (!words.containsKey(w)) words.put(w, 0);
+                int c = Integer.parseInt(e.substring(i + 1));
+                own.put(e.substring(0, i), c);
+                if (c > ownMax) ownMax = c;
             } catch (Exception ignored) { }
         }
         for (String e : sp.getString("pairs", "").split(",")) {
             int i = e.lastIndexOf(':');
             if (i <= 0) continue;
             try {
-                pairs.put(e.substring(0, i), Integer.parseInt(e.substring(i + 1)));
+                String k = e.substring(0, i);
+                int c = Integer.parseInt(e.substring(i + 1));
+                pairs.put(k, c);
+                addTot(k.substring(0, Math.max(0, k.indexOf('>'))), c);
+            } catch (Exception ignored) { }
+        }
+        for (String e : sp.getString("triples", "").split(",")) {
+            int i = e.lastIndexOf(':');
+            if (i <= 0) continue;
+            try {
+                String k = e.substring(0, i);
+                int c = Integer.parseInt(e.substring(i + 1));
+                triples.put(k, c);
+                addTot(k.substring(0, Math.max(0, k.indexOf('>'))), c);
             } catch (Exception ignored) { }
         }
     }
 
-    private int score(String w) {
-        Integer b = words.get(w);
-        Integer o = own.get(w);
-        return (b == null ? 0 : b) + (o == null ? 0 : o * 4);
+    private void addTot(String ctx, int c) {
+        if (ctx.length() == 0) return;
+        Integer t = ctxTot.get(ctx);
+        ctxTot.put(ctx, (t == null ? 0 : t) + c);
     }
 
-    /** Bir kelimeyi öğrenir; önceki kelimeyle ikilisini de kaydeder. */
+    /** Büyük modeli arka planda yükler (klavye hemen açılır). */
+    private void loadLmAsync() {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    java.util.HashMap<String, Integer> w = new java.util.HashMap<String, Integer>();
+                    for (String x : BUILTIN.split(" ")) if (x.length() > 0) w.put(x, 50);
+                    try {
+                        java.io.BufferedReader r = new java.io.BufferedReader(
+                                new java.io.InputStreamReader(getAssets().open("words_tr.txt"), "UTF-8"), 1 << 16);
+                        String line;
+                        int rank = 0;
+                        while ((line = r.readLine()) != null) {
+                            int t = line.indexOf('\t');
+                            String word = t > 0 ? line.substring(0, t) : line.trim();
+                            if (!isWord(word) && !word.equals("o")) continue;
+                            int cnt;
+                            if (t > 0) {
+                                try { cnt = Integer.parseInt(line.substring(t + 1).trim()); }
+                                catch (Exception e) { cnt = 1; }
+                            } else {
+                                rank++;
+                                cnt = Math.max(1, 20000 - rank);
+                            }
+                            Integer old = w.get(word);
+                            if (old == null || old < cnt) w.put(word, cnt);
+                        }
+                        r.close();
+                    } catch (Exception ignored) { }
+                    java.util.HashMap<String, String> bi = readLm("lm_bi.txt");
+                    java.util.HashMap<String, String> tri = readLm("lm_tri.txt");
+                    String[] v = w.keySet().toArray(new String[0]);
+                    java.util.Arrays.sort(v);
+                    int mx = 1;
+                    for (Integer c : w.values()) if (c > mx) mx = c;
+                    uniLog = Math.log(1 + mx);
+                    words = w;
+                    lmBi = bi;
+                    lmTri = tri;
+                    vocab = v;
+                    lmReady = true;
+                    h.post(new Runnable() { @Override public void run() { updateSuggestions(); } });
+                } catch (Throwable t) { }
+            }
+        }).start();
+    }
+
+    private java.util.HashMap<String, String> readLm(String name) {
+        java.util.HashMap<String, String> m = new java.util.HashMap<String, String>();
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(getAssets().open(name), "UTF-8"), 1 << 16);
+            String line;
+            while ((line = r.readLine()) != null) {
+                int t = line.indexOf('\t');
+                if (t > 0) m.put(line.substring(0, t), line.substring(t + 1));
+            }
+            r.close();
+        } catch (Exception ignored) { }
+        return m;
+    }
+
+    /** Bir kelimeyi öğrenir; önceki kelimelerle bağlantısını da kaydeder. */
     private void learn(String w) {
         if (w == null) return;
         w = w.toLowerCase(TR);
         if (!isWord(w)) return;
         Integer c = own.get(w);
-        own.put(w, (c == null ? 0 : c) + 1);
-        if (!words.containsKey(w)) words.put(w, 0);
+        int nc = (c == null ? 0 : c) + 1;
+        own.put(w, nc);
+        if (nc > ownMax) ownMax = nc;
         if (prev.length() > 0) {
             String k = prev + ">" + w;
             Integer pc = pairs.get(k);
             pairs.put(k, (pc == null ? 0 : pc) + 1);
+            addTot(prev, 1);
+            String c2 = prev2.length() > 0 ? prev2 : "^";
+            String k3 = c2 + " " + prev + ">" + w;
+            Integer tc = triples.get(k3);
+            triples.put(k3, (tc == null ? 0 : tc) + 1);
+            addTot(c2 + " " + prev, 1);
+        } else {
+            // cümle başı
+            String k = "^>" + w;
+            Integer pc = pairs.get(k);
+            pairs.put(k, (pc == null ? 0 : pc) + 1);
+            addTot("^", 1);
         }
+        prev2 = prev;
         prev = w;
         if (++learnCount % 6 == 0) saveWords();
     }
@@ -235,50 +315,59 @@ public class VoiceIME extends InputMethodService {
         }
     }
 
-    private void saveWords() {
-        if (own.size() > 6000) {
-            java.util.Iterator<java.util.Map.Entry<String, Integer>> it = own.entrySet().iterator();
-            while (it.hasNext() && own.size() > 4500) if (it.next().getValue() <= 1) it.remove();
-        }
-        if (pairs.size() > 8000) {
-            java.util.Iterator<java.util.Map.Entry<String, Integer>> it = pairs.entrySet().iterator();
-            while (it.hasNext() && pairs.size() > 6000) if (it.next().getValue() <= 1) it.remove();
-        }
+    private void trim(java.util.HashMap<String, Integer> m, int max, int target) {
+        if (m.size() <= max) return;
+        java.util.Iterator<java.util.Map.Entry<String, Integer>> it = m.entrySet().iterator();
+        while (it.hasNext() && m.size() > target) if (it.next().getValue() <= 1) it.remove();
+    }
+
+    private String dump(java.util.HashMap<String, Integer> m) {
         StringBuilder a = new StringBuilder();
-        for (java.util.Map.Entry<String, Integer> e : own.entrySet()) {
+        for (java.util.Map.Entry<String, Integer> e : m.entrySet()) {
             if (a.length() > 0) a.append(',');
             a.append(e.getKey()).append(':').append(e.getValue());
         }
-        StringBuilder b = new StringBuilder();
-        for (java.util.Map.Entry<String, Integer> e : pairs.entrySet()) {
-            if (b.length() > 0) b.append(',');
-            b.append(e.getKey()).append(':').append(e.getValue());
-        }
-        getSharedPreferences("sesli", MODE_PRIVATE).edit()
-                .putString("own", a.toString()).putString("pairs", b.toString()).apply();
+        return a.toString();
     }
 
-    /** İmleçten önceki yazıdan o anki kelimeyi ve önceki kelimeyi okur. */
+    private void saveWords() {
+        trim(own, 8000, 6000);
+        trim(pairs, 12000, 9000);
+        trim(triples, 15000, 11000);
+        getSharedPreferences("sesli", MODE_PRIVATE).edit()
+                .putString("own", dump(own)).putString("pairs", dump(pairs))
+                .putString("triples", dump(triples)).apply();
+    }
+
+    /** İmleçten önceki yazıdan o anki kelimeyi ve önceki iki kelimeyi okur. */
     private void syncFromText() {
         InputConnection ic = getCurrentInputConnection();
         cur.setLength(0);
         prev = "";
+        prev2 = "";
         if (ic == null) return;
-        CharSequence cs = ic.getTextBeforeCursor(60, 0);
+        CharSequence cs = ic.getTextBeforeCursor(80, 0);
         if (cs == null) return;
         String b = cs.toString();
-        int end = b.length();
-        int i = end;
+        int pos = b.length();
+        int i = pos;
         while (i > 0 && Character.isLetter(b.charAt(i - 1))) i--;
-        cur.append(b.substring(i, end));
-        // önceki kelime: arada sadece boşluk varsa
-        int j = i;
-        while (j > 0 && (b.charAt(j - 1) == ' ' || b.charAt(j - 1) == ' ')) j--;
-        if (j < i || cur.length() == 0) {
+        cur.append(b.substring(i, pos));
+        pos = i;
+        // önceki iki kelime (araya sadece boşluk girebilir; nokta/soru cümleyi bitirir)
+        String[] got = new String[2];
+        for (int n = 0; n < 2; n++) {
+            int j = pos;
+            while (j > 0 && (b.charAt(j - 1) == ' ' || b.charAt(j - 1) == ' ' || b.charAt(j - 1) == ',')) j--;
+            if (j == pos && !(n == 0 && cur.length() == 0)) break;   // boşluk yoksa kelime bitişik
             int k = j;
             while (k > 0 && Character.isLetter(b.charAt(k - 1))) k--;
-            if (k < j && j < b.length() + 1) prev = b.substring(k, j).toLowerCase(TR);
+            if (k == j) break;
+            got[n] = b.substring(k, j).toLowerCase(TR);
+            pos = k;
         }
+        if (got[0] != null) prev = got[0];
+        if (got[1] != null) prev2 = got[1];
     }
 
     private void markOwn() {
@@ -291,58 +380,114 @@ public class VoiceIME extends InputMethodService {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candStart, candEnd);
         if (android.os.SystemClock.uptimeMillis() - lastOwn < 400) return;
         if (newSelStart == oldSelStart && newSelEnd == oldSelEnd) return;
-        // imleç dışarıdan oynadı (kullanıcı başka yere dokundu)
         syncFromText();
         updateSuggestions();
         autoShift();
     }
 
+    // ---------------------------------------------------------- tahmin
+
+    private static void addSucc(String line, double weight, java.util.HashMap<String, Double> acc) {
+        if (line == null) return;
+        String[] parts = line.split(",");
+        double total = 0;
+        int[] cnt = new int[parts.length];
+        String[] w = new String[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            int c = parts[i].lastIndexOf(':');
+            if (c <= 0) continue;
+            w[i] = parts[i].substring(0, c);
+            try { cnt[i] = Integer.parseInt(parts[i].substring(c + 1)); } catch (Exception e) { cnt[i] = 0; }
+            total += cnt[i];
+        }
+        if (total <= 0) return;
+        for (int i = 0; i < parts.length; i++) {
+            if (w[i] == null) continue;
+            Double o = acc.get(w[i]);
+            acc.put(w[i], (o == null ? 0 : o) + weight * cnt[i] / total);
+        }
+    }
+
+    private void addPersonal(String prefix, double weight, java.util.HashMap<String, Double> acc,
+                             java.util.HashMap<String, Integer> src, String ctx) {
+        Integer tot = ctxTot.get(ctx);
+        if (tot == null || tot == 0) return;
+        String pre = ctx + ">";
+        double conf = Math.min(1.0, tot / 3.0);
+        for (java.util.Map.Entry<String, Integer> e : src.entrySet()) {
+            String k = e.getKey();
+            if (!k.startsWith(pre)) continue;
+            String w = k.substring(pre.length());
+            Double o = acc.get(w);
+            acc.put(w, (o == null ? 0 : o) + weight * conf * e.getValue() / tot);
+        }
+    }
+
+    private double uniScore(String w) {
+        Integer c = words.get(w);
+        double s = c == null ? 0 : Math.log(1 + c) / uniLog;
+        Integer o = own.get(w);
+        if (o != null) s += 0.5 * Math.min(1.0, (double) o / Math.max(3, ownMax / 2));
+        return s;
+    }
+
     private void updateSuggestions() {
         if (sugg[0] == null) return;
+        String c1 = prev.length() > 0 ? prev : "^";
+        String c2 = prev.length() > 0 ? (prev2.length() > 0 ? prev2 : "^") : "";
+
+        // bağlama göre aday puanları
+        java.util.HashMap<String, Double> ctx = new java.util.HashMap<String, Double>();
+        if (c2.length() > 0) addSucc(lmTri.get(c2 + " " + c1), 1.0, ctx);
+        addSucc(lmBi.get(c1), 0.45, ctx);
+        if (c2.length() > 0) addPersonal("", 5.0, ctx, triples, c2 + " " + c1);
+        addPersonal("", 3.0, ctx, pairs, c1);
+
         String[] out = new String[]{"", "", ""};
-        int[] sc = new int[]{-1, -1, -1};
+        double[] sc = new double[]{-1, -1, -1};
+
         if (cur.length() == 0) {
-            // sonraki kelime tahmini
-            if (prev.length() > 0) {
-                String pre = prev + ">";
-                for (java.util.Map.Entry<String, Integer> e : pairs.entrySet()) {
-                    String k = e.getKey();
-                    if (!k.startsWith(pre)) continue;
-                    rank(out, sc, k.substring(pre.length()), e.getValue() * 100 + score(k.substring(pre.length())));
-                }
-            }
-            // boşlukları sık yazdığın kelimelerle doldur
+            for (java.util.Map.Entry<String, Double> e : ctx.entrySet())
+                rank(out, sc, e.getKey(), e.getValue());
+            // boşlukları sık kullandığın kelimelerle doldur
             if (out[2].length() == 0) {
-                for (java.util.Map.Entry<String, Integer> e : own.entrySet()) {
-                    String w = e.getKey();
-                    if (w.equals(out[0]) || w.equals(out[1]) || w.equals(out[2])) continue;
-                    rank(out, sc, w, e.getValue());
+                for (java.util.Map.Entry<String, Integer> e : own.entrySet())
+                    rank(out, sc, e.getKey(), 0.01 * e.getValue() / Math.max(1, ownMax));
+            }
+            if (out[2].length() == 0) {
+                String[] def = new String[]{"ve", "bir", "bu", "evet", "tamam", "merhaba"};
+                for (String d : def) {
+                    if (!words.containsKey(d) && lmReady) continue;
+                    rank(out, sc, d, 0.0001);
                 }
             }
-            String[] def = new String[]{"Merhaba", "Tamam", "Teşekkürler"};
-            for (int i = 0; i < 3; i++) {
-                if (out[i].length() == 0) {
-                    for (String d : def) {
-                        if (!d.equalsIgnoreCase(out[0]) && !d.equalsIgnoreCase(out[1])
-                                && !d.equalsIgnoreCase(out[2])) { out[i] = d; break; }
-                    }
-                }
-            }
-            boolean sentenceStart = shift == 1;
-            if (sentenceStart) {
+            if (shift == 1) {
                 for (int i = 0; i < 3; i++)
                     if (out[i].length() > 0) out[i] = out[i].substring(0, 1).toUpperCase(TR) + out[i].substring(1);
             }
         } else {
             String p = cur.toString().toLowerCase(TR);
-            for (java.util.Map.Entry<String, Integer> e : words.entrySet()) {
+            // statik sözlükte önek aralığı (ikili arama)
+            String[] v = vocab;
+            int lo = 0, hi = v.length;
+            while (lo < hi) {
+                int mid = (lo + hi) >>> 1;
+                if (v[mid].compareTo(p) < 0) lo = mid + 1; else hi = mid;
+            }
+            for (int i = lo; i < v.length && v[i].startsWith(p); i++) {
+                String w = v[i];
+                if (w.length() <= p.length()) continue;
+                Double cs = ctx.get(w);
+                double s = uniScore(w) * 0.6 + (cs == null ? 0 : cs * 3.0) - w.length() * 0.004;
+                rank(out, sc, w, s);
+            }
+            // sadece senin yazdığın kelimeler
+            for (java.util.Map.Entry<String, Integer> e : own.entrySet()) {
                 String w = e.getKey();
                 if (w.length() <= p.length() || !w.startsWith(p)) continue;
-                int s = score(w) * 100 - w.length();
-                if (prev.length() > 0) {
-                    Integer pc = pairs.get(prev + ">" + w);
-                    if (pc != null) s += pc * 1000;
-                }
+                if (words.containsKey(w) && words.get(w) > 0 && lmReady) continue;
+                Double cs = ctx.get(w);
+                double s = uniScore(w) * 0.6 + (cs == null ? 0 : cs * 3.0) - w.length() * 0.004;
                 rank(out, sc, w, s);
             }
             boolean capFirst = Character.isUpperCase(cur.charAt(0));
@@ -355,7 +500,7 @@ public class VoiceIME extends InputMethodService {
         for (int i = 0; i < 3; i++) sugg[i].setText(out[i]);
     }
 
-    private void rank(String[] out, int[] sc, String w, int s) {
+    private void rank(String[] out, double[] sc, String w, double s) {
         for (int i = 0; i < 3; i++) if (out[i].equals(w)) return;
         for (int i = 0; i < 3; i++) {
             if (s > sc[i]) {
@@ -396,7 +541,8 @@ public class VoiceIME extends InputMethodService {
     @Override
     public void onCreate() {
         super.onCreate();
-        loadWords();
+        loadPersonal();
+        loadLmAsync();
         paintNav();
     }
 
@@ -603,7 +749,7 @@ public class VoiceIME extends InputMethodService {
                 markOwn();
                 learn(cur.toString());
                 cur.setLength(0);
-                prev = "";
+                prev = ""; prev2 = "";
                 if (!sendDefaultEditorAction(true)) sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
                 updateSuggestions();
             }
@@ -630,7 +776,7 @@ public class VoiceIME extends InputMethodService {
         } else {
             learn(cur.toString());
             cur.setLength(0);
-            if (s.equals(".") || s.equals("?") || s.equals("!")) prev = "";
+            if (s.equals(".") || s.equals("?") || s.equals("!")) { prev = ""; prev2 = ""; }
             if ((s.equals(".") || s.equals("?") || s.equals("!")) && page == 0 && shift != 2) {
                 shift = 1;
                 refreshLabels();
