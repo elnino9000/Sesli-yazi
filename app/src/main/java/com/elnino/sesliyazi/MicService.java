@@ -199,6 +199,8 @@ public class MicService extends AccessibilityService {
     static volatile boolean connected = false;
     static volatile int events = 0;
     static volatile String info = "";
+    static final java.util.List<String> history =
+            java.util.Collections.synchronizedList(new ArrayList<String>());
 
     private final Runnable pollRun = new Runnable() {
         @Override public void run() {
@@ -308,17 +310,23 @@ public class MicService extends AccessibilityService {
                 + "\nPencereler: " + windowsSummary()
                 + "\nSon uygulama: " + lastPkg;
 
-        // Teşhis: başka uygulamalarda durum değişince kısa mesaj göster
-        String brief = (lastPkg.equals(getPackageName()) ? "" : lastPkg.replace("com.", ""))
-                + "\nKlavye " + (kb >= 0 ? "VAR" : kb == -1 ? "YOK" : "?")
+        // Teşhis kaydı: durum değişince son 8 satırı sakla (uygulamadaki Durum kutusunda görünür)
+        String activePkg = "?";
+        try {
+            AccessibilityNodeInfo ar = getRootInActiveWindow();
+            activePkg = ar == null ? "boş" : String.valueOf(ar.getPackageName()).replace("com.", "");
+        } catch (Exception ignored) { }
+        boolean noise = activePkg.contains("screenshot") || activePkg.contains("systemui");
+        String brief = activePkg
+                + " | Klavye " + (kb >= 0 ? "VAR" : kb == -1 ? "YOK" : "?")
                 + " | Kutu " + (f == null ? "YOK" : editable ? "VAR" : "yazılamaz")
-                + " | Pencere " + windowsSummary();
-        long now = System.currentTimeMillis();
-        if (!brief.equals(lastToast) && now - lastToastAt > 2500
-                && !lastPkg.equals(getPackageName())) {
+                + " | " + windowsSummary()
+                + " | simge " + (shown ? "açık" : "kapalı");
+        if (!noise && !brief.equals(lastToast)) {
             lastToast = brief;
-            lastToastAt = now;
-            toast(brief);
+            java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("HH:mm:ss", Locale.US);
+            history.add(0, fmt.format(new java.util.Date()) + "  " + brief);
+            while (history.size() > 8) history.remove(history.size() - 1);
         }
 
         if (f != null && f.isPassword()) {

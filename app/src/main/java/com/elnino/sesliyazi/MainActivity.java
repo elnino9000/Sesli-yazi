@@ -135,9 +135,15 @@ public class MainActivity extends Activity {
     private final Runnable ticker = new Runnable() {
         @Override public void run() {
             if (debug != null) {
-                debug.setText("Servis: " + (MicService.connected ? "çalışıyor" : "çalışmıyor")
-                        + "\nAlınan olay: " + MicService.events
-                        + (MicService.info.isEmpty() ? "" : "\n" + MicService.info));
+                StringBuilder sb = new StringBuilder();
+                sb.append("Servis: ").append(MicService.connected ? "çalışıyor" : "çalışmıyor")
+                        .append("\nAlınan olay: ").append(MicService.events);
+                sb.append("\n\nSon durumlar (en yeni üstte):");
+                synchronized (MicService.history) {
+                    for (String s : MicService.history) sb.append("\n").append(s);
+                }
+                debug.setText(sb.toString());
+                debug.setTextSize(14);
             }
             refresh();
             ui.postDelayed(this, 700);
