@@ -64,11 +64,15 @@ public class MicService extends AccessibilityService {
         super.onServiceConnected();
         wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         buildBubble();
+        connected = true;
         toast("Sesli Yazı hazır");
+        handler.removeCallbacks(pollRun);
+        handler.postDelayed(pollRun, 1200);
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        events++;
         // Klavye bazen gecikmeli açılır: birkaç kez tekrar kontrol et
         handler.removeCallbacks(updateRun);
         handler.postDelayed(updateRun, 120);
@@ -82,6 +86,8 @@ public class MicService extends AccessibilityService {
     @Override
     public boolean onUnbind(Intent intent) {
         handler.removeCallbacks(updateRun);
+        handler.removeCallbacks(pollRun);
+        connected = false;
         endListening(true);
         hide();
         return super.onUnbind(intent);
@@ -155,6 +161,19 @@ public class MicService extends AccessibilityService {
 
     private static final int KB_UNKNOWN = -2;
     private boolean errorShown = false;
+    private boolean imeSeen = false;
+
+    // Açılış ekranındaki "Durum" satırı için
+    static volatile boolean connected = false;
+    static volatile int events = 0;
+    static volatile String info = "";
+
+    private final Runnable pollRun = new Runnable() {
+        @Override public void run() {
+            safeUpdate();
+            handler.postDelayed(this, 1200);
+        }
+    };
 
     /** Klavyenin ekrandaki üst kenarı. -1: klavye kapalı, -2: telefon bilgi vermiyor. */
     private int keyboardTop() {
@@ -198,6 +217,7 @@ public class MicService extends AccessibilityService {
         try {
             update();
         } catch (Exception e) {
+            info = "HATA: " + e;
             if (!errorShown) {
                 errorShown = true;
                 toast("Sesli Yazı hata: " + e);
@@ -205,10 +225,49 @@ public class MicService extends AccessibilityService {
         }
     }
 
+    /** Odaktaki yazı kutusunu ağaçta tarayarak bulur (findFocus işe yaramazsa). */
+    private AccessibilityNodeInfo scanForEditable() {
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            List<AccessibilityNodeInfo> roots = new ArrayList<>();
+            AccessibilityNodeInfo active = getRootInActiveWindow();
+            if (active != null) roots.add(active);
+            if (windows != null) {
+                for (AccessibilityWindowInfo w : windows) {
+                    if (w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                        AccessibilityNodeInfo r = w.getRoot();
+                        if (r != null) roots.add(r);
+                    }
+                }
+            }
+            int seen = 0;
+            for (AccessibilityNodeInfo root : roots) {
+                ArrayList<AccessibilityNodeInfo> queue = new ArrayList<>();
+                queue.add(root);
+                for (int i = 0; i < queue.size() && seen < 600; i++) {
+                    AccessibilityNodeInfo n = queue.get(i);
+                    seen++;
+                    if (n.isEditable() && (n.isFocused() || n.isAccessibilityFocused())) return n;
+                    for (int c = 0; c < n.getChildCount(); c++) {
+                        AccessibilityNodeInfo ch = n.getChild(c);
+                        if (ch != null) queue.add(ch);
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
     private void update() {
         int kb = keyboardTop();
+        if (kb >= 0) imeSeen = true;
         AccessibilityNodeInfo f = findInput();
+        if (f == null) f = scanForEditable();
         boolean editable = f != null && f.isEditable();
+
+        info = "Klavye: " + (kb >= 0 ? "görüyorum" : kb == -1 ? "göremiyorum" : "bilgi yok")
+                + "\nYazı kutusu: " + (f == null ? "bulamıyorum" : editable ? "buldum" : "var ama yazılamaz")
+                + "\nSimge: " + (shown ? "gösteriliyor" : "gizli");
 
         if (f != null && f.isPassword()) {
             endListening(true);
@@ -216,8 +275,8 @@ public class MicService extends AccessibilityService {
             return;
         }
 
-        // Klavye açıksa simge çıkar. Telefon klavye bilgisi vermiyorsa, odakta yazı kutusu varsa çıkar.
-        boolean visible = kb >= 0 || (kb == KB_UNKNOWN && editable);
+        // Klavye görülüyorsa simge çıkar. Telefon klavyeyi hiç bildirmiyorsa, odakta yazı kutusu yeter.
+        boolean visible = kb >= 0 || (!imeSeen && editable);
         if (!visible) {
             endListening(true);
             hide();

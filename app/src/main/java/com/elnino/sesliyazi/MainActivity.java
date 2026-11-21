@@ -24,6 +24,7 @@ public class MainActivity extends Activity {
 
     private TextView step1Status;
     private TextView step2Status;
+    private TextView debug;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -84,6 +85,16 @@ public class MainActivity extends Activity {
         ((LinearLayout.LayoutParams) c2.getLayoutParams()).topMargin = dp(20);
         root.addView(c2);
 
+        // Canlı durum (sorun olursa buraya bakılır)
+        TextView dbgTitle = text("Durum", 22, Color.WHITE);
+        dbgTitle.setPadding(0, dp(24), 0, dp(8));
+        root.addView(dbgTitle);
+        debug = text("", 17, Color.parseColor("#EBEBF5"));
+        debug.setPadding(dp(16), dp(12), dp(16), dp(12));
+        debug.setBackground(round("#1C1C1E", 18));
+        root.addView(debug, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         // Deneme kutusu
         TextView testTitle = text("Dene", 22, Color.WHITE);
         testTitle.setPadding(0, dp(24), 0, dp(8));
@@ -111,7 +122,27 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refresh();
+        ticker.run();
     }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        ui.removeCallbacks(ticker);
+    }
+
+    private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable ticker = new Runnable() {
+        @Override public void run() {
+            if (debug != null) {
+                debug.setText("Servis: " + (MicService.connected ? "çalışıyor" : "çalışmıyor")
+                        + "\nAlınan olay: " + MicService.events
+                        + (MicService.info.isEmpty() ? "" : "\n" + MicService.info));
+            }
+            refresh();
+            ui.postDelayed(this, 700);
+        }
+    };
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
