@@ -1,7 +1,7 @@
 # Sesli Yazı
 
-Herhangi bir uygulamada yazı kutusuna dokununca klavyenin üstünde otomatik bir mikrofon simgesi çıkar. Simgeye basıp konuşunca söylenenler (Türkçe) kutuya yazılır.
+**Sesli Klavye**: klavye olarak seçilince kendiliğinden dinler, söylenenleri (Türkçe) odaktaki yazı kutusuna yazar. Her uygulamada çalışır.
 
-Erişilebilirlik servisi olarak çalışır; klavye değiştirmeye gerek yoktur.
+Kullanım: klavyedeki 🌐 tuşuyla Sesli Klavye'yi seç, konuş, "Bitti" ile eski klavyene dön.
 
 APK: GitHub Actions ile derlenir, **Releases > son-surum** altından indirilir.
