@@ -103,5 +103,114 @@ def build(path, name, minc, topk, minTotal, maxCtx):
             f.write(line + "\n")
     print(name, "bağlam:", len(rows))
 
-build(bi_path, "lm_bi.txt", 2, 6, 6, 40000)
-build(tri_path, "lm_tri.txt", 3, 4, 5, 90000)
+build(bi_path, "lm_bi.txt", 2, 8, 5, 60000)
+build(tri_path, "lm_tri.txt", 2, 5, 4, 140000)
+
+# ---------------------------------------------------------------- ölçüm
+# Ayrılmış (eğitimde kullanılmayan) cümlelerde tahmin başarısını ölçer ve ağırlıkları dener.
+if len(sys.argv) > 3:
+    import math, itertools, random
+    uni_c = dict(vocab_list)
+    mx = max(uni_c.values())
+    ulog = math.log(1 + mx)
+
+    def load_lm(name):
+        m = {}
+        with open(os.path.join(out, name), encoding='utf-8') as f:
+            for line in f:
+                k, v = line.rstrip("\n").split("\t")
+                lst = []
+                tot = 0
+                for it in v.split(","):
+                    w, c = it.rsplit(":", 1)
+                    lst.append((w, int(c)))
+                    tot += int(c)
+                m[k] = (lst, tot)
+        return m
+
+    bi = load_lm("lm_bi.txt")
+    tri = load_lm("lm_tri.txt")
+    vocab_sorted = sorted(vocab)
+    by_prefix = {}
+    for w in sorted(vocab_sorted, key=lambda x: -uni_c[x]):
+        for n in (1, 2):
+            if len(w) > n:
+                lst = by_prefix.setdefault(w[:n], [])
+                if len(lst) < 400:
+                    lst.append(w)
+
+    tests = []
+    with open(sys.argv[3], encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            for ws in segments(line):
+                ws = [w if w in vocab else None for w in ws]
+                if len(ws) >= 3:
+                    tests.append(ws)
+    random.seed(7)
+    random.shuffle(tests)
+    tests = tests[:12000]
+    print("ölçüm cümlesi:", len(tests))
+
+    def ctx_scores(p2, p1, wbi, wtri):
+        acc = {}
+        if p2 is not None:
+            e = tri.get(p2 + " " + p1)
+            if e:
+                for w, c in e[0]:
+                    acc[w] = acc.get(w, 0) + wtri * c / e[1]
+        e = bi.get(p1)
+        if e:
+            for w, c in e[0]:
+                acc[w] = acc.get(w, 0) + wbi * c / e[1]
+        return acc
+
+    def evaluate(wbi, wtri, kctx, wuni, nprefix):
+        hit = tot = 0
+        for ws in (tests if nprefix == 0 else tests[:1500]):
+            toks = ["^"] + ws
+            for i in range(1, len(toks)):
+                actual = toks[i]
+                if actual is None:
+                    continue
+                p1 = toks[i - 1]
+                if p1 is None:
+                    continue
+                p2 = toks[i - 2] if i >= 2 else None
+                if i == 1:
+                    p2 = None
+                if i >= 2 and p2 is None:
+                    continue
+                if i >= 2 and toks[i - 2] is None:
+                    continue
+                acc = ctx_scores(p2, p1, wbi, wtri)
+                if nprefix == 0:
+                    cand = acc
+                    scored = sorted(cand.items(), key=lambda x: -x[1])[:3]
+                    top = [w for w, _ in scored]
+                else:
+                    if len(actual) <= nprefix:
+                        continue
+                    pre = actual[:nprefix]
+                    cands = by_prefix.get(pre, [])
+                    best = []
+                    for w in cands:
+                        s = wuni * math.log(1 + uni_c[w]) / ulog + kctx * acc.get(w, 0)
+                        best.append((s, w))
+                    best.sort(reverse=True)
+                    top = [w for _, w in best[:3]]
+                tot += 1
+                if actual in top:
+                    hit += 1
+        return hit, tot
+
+    h0, t0 = evaluate(0.45, 1.0, 3.0, 0.6, 0)
+    print("SONRAKİ KELİME ilk3 isabet: %.1f%% (%d/%d)" % (100.0 * h0 / max(1, t0), h0, t0))
+    for npfx in (1, 2):
+        best = None
+        for wbi, kctx, wuni in itertools.product((0.3, 0.6, 1.0), (1.5, 3.0, 8.0), (0.3, 0.6, 1.2)):
+            h1, t1 = evaluate(wbi, 1.0, kctx, wuni, npfx)
+            r = h1 / max(1, t1)
+            if best is None or r > best[0]:
+                best = (r, wbi, kctx, wuni)
+            print("  önek=%d wbi=%.1f k=%.1f wuni=%.1f -> %.1f%%" % (npfx, wbi, kctx, wuni, 100 * r))
+        print("EN İYİ önek=%d: %.1f%% wbi=%.1f k=%.1f wuni=%.1f" % (npfx, 100 * best[0], best[1], best[2], best[3]))

@@ -29,11 +29,13 @@ jobs:
           timeout 300 curl -fsSL https://downloads.tatoeba.org/exports/per_language/tur/tur_sentences.tsv.bz2 \
             | bzcat | cut -f3 > work/tatoeba.txt || true
           timeout 600 curl -fsSL https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/tr.txt.gz \
-            | gunzip -c | head -n 8000000 > work/subs.txt || true
+            | gunzip -c | head -n 20000000 > work/subs.txt || true
           wc -l work/tatoeba.txt work/subs.txt || true
-          cat work/tatoeba.txt work/subs.txt > work/corpus.txt 2>/dev/null || true
+          tail -n 30000 work/subs.txt > work/test.txt || true
+          head -n -30000 work/subs.txt > work/subs_train.txt || true
+          cat work/tatoeba.txt work/subs_train.txt > work/corpus.txt 2>/dev/null || true
           if [ "$(wc -l < work/corpus.txt)" -gt 1000 ]; then
-            python3 scripts/build_lm.py work/corpus.txt app/src/main/assets
+            python3 scripts/build_lm.py work/corpus.txt app/src/main/assets work/test.txt
           else
             echo "Metin indirilemedi, yedek sözlük kullanılıyor"
             curl -fsSL https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/tr/tr_50k.txt \

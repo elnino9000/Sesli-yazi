@@ -153,6 +153,7 @@ public class VoiceIME extends InputMethodService {
     private volatile String[] vocab = new String[0];     // sıralı, önek araması için
     private double uniLog = 1;
     private volatile boolean lmReady = false;
+    private volatile String lmStatus = "";
 
     // ---- kişisel öğrenme (senin yazdıkların)
     private final java.util.HashMap<String, Integer> own = new java.util.HashMap<String, Integer>();
@@ -255,8 +256,12 @@ public class VoiceIME extends InputMethodService {
                     lmTri = tri;
                     vocab = v;
                     lmReady = true;
+                    lmStatus = "";
                     h.post(new Runnable() { @Override public void run() { updateSuggestions(); } });
-                } catch (Throwable t) { }
+                } catch (Throwable t) {
+                    lmStatus = "Model hatası: " + t.getClass().getSimpleName();
+                    h.post(new Runnable() { @Override public void run() { updateSuggestions(); } });
+                }
             }
         }).start();
     }
@@ -497,6 +502,8 @@ public class VoiceIME extends InputMethodService {
             }
             if (out[0].length() == 0) out[0] = cur.toString();
         }
+        if (!lmReady && cur.length() == 0)
+            out[1] = lmStatus.length() > 0 ? lmStatus : "Model yükleniyor…";
         for (int i = 0; i < 3; i++) sugg[i].setText(out[i]);
     }
 
