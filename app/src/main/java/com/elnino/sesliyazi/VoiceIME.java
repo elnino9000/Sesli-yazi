@@ -146,67 +146,204 @@ public class VoiceIME extends InputMethodService {
       + "düşünüyorum sanırım galiba herhalde muhtemelen kesinlikle mutlaka aynen katılıyorum tamamdır "
       + "olsun neyse hadi haydi dikkat acaba sizce bence nedir neden niye nasılsınız iyiyim iyiyiz";
 
-    private final java.util.HashMap<String, Integer> words = new java.util.HashMap<String, Integer>();
+    private final java.util.HashMap<String, Integer> words = new java.util.HashMap<String, Integer>();  // sözlük (taban puan)
+    private final java.util.HashMap<String, Integer> own = new java.util.HashMap<String, Integer>();    // senin yazdıkların
+    private final java.util.HashMap<String, Integer> pairs = new java.util.HashMap<String, Integer>();  // "önceki>sonraki"
     private final StringBuilder cur = new StringBuilder();
+    private String prev = "";
     private int learnCount = 0;
+    private long lastOwn = 0;
     private final Locale TR = new Locale("tr", "TR");
+
+    private boolean isWord(String w) {
+        if (w == null || w.length() < 2 || w.length() > 30) return false;
+        for (int i = 0; i < w.length(); i++) if (!Character.isLetter(w.charAt(i))) return false;
+        return true;
+    }
 
     private void loadWords() {
         words.clear();
+        own.clear();
+        pairs.clear();
         for (String w : BUILTIN.split(" ")) {
-            if (w.length() > 0) words.put(w, 1);
+            if (w.length() > 0) words.put(w, 3);
         }
-        String saved = getSharedPreferences("sesli", MODE_PRIVATE).getString("words", "");
-        for (String e : saved.split(",")) {
+        // Derleme sırasında indirilen büyük Türkçe kelime listesi (varsa)
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(
+                    getAssets().open("words_tr.txt"), "UTF-8"));
+            String line;
+            int rank = 0;
+            while ((line = r.readLine()) != null) {
+                String w = line.trim();
+                if (!isWord(w)) continue;
+                rank++;
+                int base = rank < 400 ? 3 : (rank < 4000 ? 2 : 1);
+                Integer old = words.get(w);
+                if (old == null || old < base) words.put(w, base);
+            }
+            r.close();
+        } catch (Exception ignored) { }
+
+        SharedPreferences sp = getSharedPreferences("sesli", MODE_PRIVATE);
+        for (String e : sp.getString("own", "").split(",")) {
             int i = e.lastIndexOf(':');
             if (i <= 0) continue;
             try {
-                words.put(e.substring(0, i), Integer.parseInt(e.substring(i + 1)));
+                String w = e.substring(0, i);
+                own.put(w, Integer.parseInt(e.substring(i + 1)));
+                if (!words.containsKey(w)) words.put(w, 0);
+            } catch (Exception ignored) { }
+        }
+        for (String e : sp.getString("pairs", "").split(",")) {
+            int i = e.lastIndexOf(':');
+            if (i <= 0) continue;
+            try {
+                pairs.put(e.substring(0, i), Integer.parseInt(e.substring(i + 1)));
             } catch (Exception ignored) { }
         }
     }
 
+    private int score(String w) {
+        Integer b = words.get(w);
+        Integer o = own.get(w);
+        return (b == null ? 0 : b) + (o == null ? 0 : o * 4);
+    }
+
+    /** Bir kelimeyi öğrenir; önceki kelimeyle ikilisini de kaydeder. */
     private void learn(String w) {
         if (w == null) return;
         w = w.toLowerCase(TR);
-        if (w.length() < 2) return;
-        Integer c = words.get(w);
-        words.put(w, (c == null ? 0 : c) + 3);
-        if (++learnCount % 8 == 0) saveWords();
+        if (!isWord(w)) return;
+        Integer c = own.get(w);
+        own.put(w, (c == null ? 0 : c) + 1);
+        if (!words.containsKey(w)) words.put(w, 0);
+        if (prev.length() > 0) {
+            String k = prev + ">" + w;
+            Integer pc = pairs.get(k);
+            pairs.put(k, (pc == null ? 0 : pc) + 1);
+        }
+        prev = w;
+        if (++learnCount % 6 == 0) saveWords();
+    }
+
+    /** Konuşarak yazılan cümleyi de öğrenir. */
+    private void learnText(String text) {
+        for (String t : text.split("\\s+")) {
+            String w = t.replaceAll("[^\\p{L}]", "");
+            if (w.length() > 0) learn(w);
+        }
     }
 
     private void saveWords() {
-        StringBuilder sb = new StringBuilder();
-        int n = 0;
-        for (java.util.Map.Entry<String, Integer> e : words.entrySet()) {
-            if (e.getValue() <= 1) continue;
-            if (sb.length() > 0) sb.append(',');
-            sb.append(e.getKey()).append(':').append(e.getValue());
-            if (++n > 3000) break;
+        if (own.size() > 6000) {
+            java.util.Iterator<java.util.Map.Entry<String, Integer>> it = own.entrySet().iterator();
+            while (it.hasNext() && own.size() > 4500) if (it.next().getValue() <= 1) it.remove();
         }
-        getSharedPreferences("sesli", MODE_PRIVATE).edit().putString("words", sb.toString()).apply();
+        if (pairs.size() > 8000) {
+            java.util.Iterator<java.util.Map.Entry<String, Integer>> it = pairs.entrySet().iterator();
+            while (it.hasNext() && pairs.size() > 6000) if (it.next().getValue() <= 1) it.remove();
+        }
+        StringBuilder a = new StringBuilder();
+        for (java.util.Map.Entry<String, Integer> e : own.entrySet()) {
+            if (a.length() > 0) a.append(',');
+            a.append(e.getKey()).append(':').append(e.getValue());
+        }
+        StringBuilder b = new StringBuilder();
+        for (java.util.Map.Entry<String, Integer> e : pairs.entrySet()) {
+            if (b.length() > 0) b.append(',');
+            b.append(e.getKey()).append(':').append(e.getValue());
+        }
+        getSharedPreferences("sesli", MODE_PRIVATE).edit()
+                .putString("own", a.toString()).putString("pairs", b.toString()).apply();
+    }
+
+    /** İmleçten önceki yazıdan o anki kelimeyi ve önceki kelimeyi okur. */
+    private void syncFromText() {
+        InputConnection ic = getCurrentInputConnection();
+        cur.setLength(0);
+        prev = "";
+        if (ic == null) return;
+        CharSequence cs = ic.getTextBeforeCursor(60, 0);
+        if (cs == null) return;
+        String b = cs.toString();
+        int end = b.length();
+        int i = end;
+        while (i > 0 && Character.isLetter(b.charAt(i - 1))) i--;
+        cur.append(b.substring(i, end));
+        // önceki kelime: arada sadece boşluk varsa
+        int j = i;
+        while (j > 0 && (b.charAt(j - 1) == ' ' || b.charAt(j - 1) == ' ')) j--;
+        if (j < i || cur.length() == 0) {
+            int k = j;
+            while (k > 0 && Character.isLetter(b.charAt(k - 1))) k--;
+            if (k < j && j < b.length() + 1) prev = b.substring(k, j).toLowerCase(TR);
+        }
+    }
+
+    private void markOwn() {
+        lastOwn = android.os.SystemClock.uptimeMillis();
+    }
+
+    @Override
+    public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd,
+                                  int candStart, int candEnd) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candStart, candEnd);
+        if (android.os.SystemClock.uptimeMillis() - lastOwn < 400) return;
+        if (newSelStart == oldSelStart && newSelEnd == oldSelEnd) return;
+        // imleç dışarıdan oynadı (kullanıcı başka yere dokundu)
+        syncFromText();
+        updateSuggestions();
+        autoShift();
     }
 
     private void updateSuggestions() {
         if (sugg[0] == null) return;
         String[] out = new String[]{"", "", ""};
+        int[] sc = new int[]{-1, -1, -1};
         if (cur.length() == 0) {
-            out = new String[]{"Merhaba", "Tamam", "Teşekkürler"};
+            // sonraki kelime tahmini
+            if (prev.length() > 0) {
+                String pre = prev + ">";
+                for (java.util.Map.Entry<String, Integer> e : pairs.entrySet()) {
+                    String k = e.getKey();
+                    if (!k.startsWith(pre)) continue;
+                    rank(out, sc, k.substring(pre.length()), e.getValue() * 100 + score(k.substring(pre.length())));
+                }
+            }
+            // boşlukları sık yazdığın kelimelerle doldur
+            if (out[2].length() == 0) {
+                for (java.util.Map.Entry<String, Integer> e : own.entrySet()) {
+                    String w = e.getKey();
+                    if (w.equals(out[0]) || w.equals(out[1]) || w.equals(out[2])) continue;
+                    rank(out, sc, w, e.getValue());
+                }
+            }
+            String[] def = new String[]{"Merhaba", "Tamam", "Teşekkürler"};
+            for (int i = 0; i < 3; i++) {
+                if (out[i].length() == 0) {
+                    for (String d : def) {
+                        if (!d.equalsIgnoreCase(out[0]) && !d.equalsIgnoreCase(out[1])
+                                && !d.equalsIgnoreCase(out[2])) { out[i] = d; break; }
+                    }
+                }
+            }
+            boolean sentenceStart = shift == 1;
+            if (sentenceStart) {
+                for (int i = 0; i < 3; i++)
+                    if (out[i].length() > 0) out[i] = out[i].substring(0, 1).toUpperCase(TR) + out[i].substring(1);
+            }
         } else {
             String p = cur.toString().toLowerCase(TR);
-            int[] sc = new int[]{-1, -1, -1};
             for (java.util.Map.Entry<String, Integer> e : words.entrySet()) {
                 String w = e.getKey();
                 if (w.length() <= p.length() || !w.startsWith(p)) continue;
-                int s = e.getValue() * 100 - w.length();
-                for (int i = 0; i < 3; i++) {
-                    if (s > sc[i]) {
-                        for (int j = 2; j > i; j--) { sc[j] = sc[j - 1]; out[j] = out[j - 1]; }
-                        sc[i] = s;
-                        out[i] = w;
-                        break;
-                    }
+                int s = score(w) * 100 - w.length();
+                if (prev.length() > 0) {
+                    Integer pc = pairs.get(prev + ">" + w);
+                    if (pc != null) s += pc * 1000;
                 }
+                rank(out, sc, w, s);
             }
             boolean capFirst = Character.isUpperCase(cur.charAt(0));
             for (int i = 0; i < 3; i++) {
@@ -218,15 +355,29 @@ public class VoiceIME extends InputMethodService {
         for (int i = 0; i < 3; i++) sugg[i].setText(out[i]);
     }
 
+    private void rank(String[] out, int[] sc, String w, int s) {
+        for (int i = 0; i < 3; i++) if (out[i].equals(w)) return;
+        for (int i = 0; i < 3; i++) {
+            if (s > sc[i]) {
+                for (int j = 2; j > i; j--) { sc[j] = sc[j - 1]; out[j] = out[j - 1]; }
+                sc[i] = s;
+                out[i] = w;
+                return;
+            }
+        }
+    }
+
     private void pickSuggestion(int i) {
         String w = sugg[i].getText().toString();
         if (w.length() == 0) return;
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
+        syncFromText();   // yanlış silmemek için gerçek durumu oku
+        markOwn();
         if (cur.length() > 0) ic.deleteSurroundingText(cur.length(), 0);
         ic.commitText(w + " ", 1);
-        learn(w);
         cur.setLength(0);
+        learn(w);
         updateSuggestions();
         if (shift == 1) { shift = 0; refreshLabels(); }
     }
@@ -449,7 +600,10 @@ public class VoiceIME extends InputMethodService {
         }, false));
         b.addView(mkKey("↵", 1.4f, true, new Runnable() {
             @Override public void run() {
+                markOwn();
+                learn(cur.toString());
                 cur.setLength(0);
+                prev = "";
                 if (!sendDefaultEditorAction(true)) sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
                 updateSuggestions();
             }
@@ -466,6 +620,7 @@ public class VoiceIME extends InputMethodService {
     private void typeKey(String s) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
+        markOwn();
         ic.commitText(s, 1);
         leaveStatus();
         boolean letter = Character.isLetter(s.charAt(0));
@@ -475,6 +630,7 @@ public class VoiceIME extends InputMethodService {
         } else {
             learn(cur.toString());
             cur.setLength(0);
+            if (s.equals(".") || s.equals("?") || s.equals("!")) prev = "";
             if ((s.equals(".") || s.equals("?") || s.equals("!")) && page == 0 && shift != 2) {
                 shift = 1;
                 refreshLabels();
@@ -486,6 +642,7 @@ public class VoiceIME extends InputMethodService {
     private void doSpace() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
+        markOwn();
         ic.commitText(" ", 1);
         leaveStatus();
         learn(cur.toString());
@@ -494,6 +651,7 @@ public class VoiceIME extends InputMethodService {
     }
 
     private void doDelete() {
+        markOwn();
         if (cur.length() > 0) cur.setLength(cur.length() - 1);
         sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL);
         updateSuggestions();
@@ -623,7 +781,7 @@ public class VoiceIME extends InputMethodService {
         setStatus("Konuşmak için mikrofona dokun \u2192");
         setPartial("");
         page = 0;
-        cur.setLength(0);
+        syncFromText();
         buildKeys();
         autoShift();
         updateSuggestions();
@@ -635,12 +793,14 @@ public class VoiceIME extends InputMethodService {
         super.onFinishInputView(finishingInput);
         h.removeCallbacks(autoStart);
         stopAll();
+        saveWords();
     }
 
     @Override
     public void onDestroy() {
         h.removeCallbacksAndMessages(null);
         stopAll();
+        saveWords();
         super.onDestroy();
     }
 
@@ -1009,7 +1169,11 @@ public class VoiceIME extends InputMethodService {
             sp = sp.substring(0, 1).toUpperCase(new Locale("tr", "TR")) + sp.substring(1);
         }
         String prefix = (!b.isEmpty() && !Character.isWhitespace(b.charAt(b.length() - 1))) ? " " : "";
+        markOwn();
         ic.commitText(prefix + sp + " ", 1);
+        cur.setLength(0);
+        learnText(sp);
+        updateSuggestions();
     }
 
     /** Noktalama: önceki boşluğu silip işareti yazar. */

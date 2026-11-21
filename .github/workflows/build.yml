@@ -23,6 +23,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Türkçe kelime listesini indir
+        run: |
+          mkdir -p app/src/main/assets
+          curl -fsSL https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/tr/tr_50k.txt \
+            | awk '{print $1}' | grep -E '^[a-zçğıöşüâîû]{2,}$' | head -n 35000 > app/src/main/assets/words_tr.txt || true
+          wc -l app/src/main/assets/words_tr.txt || true
+
       - name: APK derle
         run: gradle assembleDebug --no-daemon
 
