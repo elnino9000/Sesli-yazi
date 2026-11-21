@@ -99,151 +99,404 @@ public class VoiceIME extends InputMethodService {
         return false;
     }
 
+    // ---------------------------------------------------------- klavye düzeni
     private LinearLayout keysBox;
+    private FrameLayout bar;
+    private LinearLayout suggRow;
+    private final TextView[] sugg = new TextView[3];
     private int page = 0;      // 0 harf, 1 sembol
     private int shift = 0;     // 0 kapalı, 1 tek harf, 2 kilitli
     private long lastShiftTap = 0;
+    private TextView shiftKey;
+    private final List<TextView> letterViews = new ArrayList<TextView>();
+    private final List<String> letterBase = new ArrayList<String>();
+
+    private static final int KEY_BG = 0xFF2C2C2E;
+    private static final int KEY_FUNC = 0xFF3A3A3C;
+    private static final int KEY_DOWN = 0xFF636366;
 
     private static final String[][] LET = {
-        {"q","w","e","r","t","y","u","\u0131","o","p","\u011f","\u00fc"},
-        {"a","s","d","f","g","h","j","k","l","\u015f","i"},
-        {"z","x","c","v","b","n","m","\u00f6","\u00e7"}};
+        {"q","w","e","r","t","y","u","ı","o","p","ğ","ü"},
+        {"a","s","d","f","g","h","j","k","l","ş","i"},
+        {"z","x","c","v","b","n","m","ö","ç"}};
     private static final String[][] SYM = {
         {"1","2","3","4","5","6","7","8","9","0"},
-        {"-","/",":",";","(",")","\u20ba","&","@","\""},
+        {"-","/",":",";","(",")","₺","&","@","\""},
         {".",",","?","!","'","%","+","="}};
+
+    // --- öneri sistemi: yerleşik kelimeler + senin yazdıkların
+    private static final String BUILTIN =
+        "ve bir bu da de için ile ama çok daha en gibi var yok evet hayır tamam merhaba selam teşekkürler "
+      + "teşekkür ederim sağ ol rica ederim lütfen günaydın iyi akşamlar geceler günler nasılsın nasıl "
+      + "neredesin ne zaman şimdi sonra yarın bugün dün bekliyorum geliyorum geldim gidiyorum gittim "
+      + "yapıyorum yaptım yapacağım olur olmaz tabii tabi peki belki çünkü fakat ancak veya hem hiç her "
+      + "herkes kimse biraz bence sence bana sana ona bize size onlara benim senin onun bizim sizin "
+      + "onların burada orada şurada nerede nereye nereden kim kimin hangi kaç kadar sadece zaten artık "
+      + "hala henüz bile mi mı mu mü değil değildi oldu olacak olarak olan olduğu için işte aslında "
+      + "gerçekten mesela örneğin hemen şimdilik görüşürüz görüşmek üzere haber ver verir misin söyle "
+      + "söyler misin bakar mısın bakalım bakarım yazıyorum yazdım arıyorum aradım aramak ödeme ödedim "
+      + "ödeyeceğim hesap numarası numara telefon mesaj fotoğraf video ürün fiyat adet tane lira para "
+      + "kasa personel müşteri sipariş teslim kargo gönderdim gönderiyorum gönderdi aldım aldık alacağım "
+      + "satış alış stok mal toptan perakende fatura makbuz tutar toplam borç alacak vade tarih saat "
+      + "gün hafta ay yıl sabah öğle akşam gece pazartesi salı çarşamba perşembe cuma cumartesi pazar "
+      + "ocak şubat mart nisan mayıs haziran temmuz ağustos eylül ekim kasım aralık anne baba abi abla "
+      + "kardeş eşim çocuk çocuklar aile arkadaş hocam abim ablam kardeşim efendim buyurun anladım "
+      + "anlamadım olabilir mümkün imkansız önemli acil hızlı yavaş güzel kötü iyi büyük küçük yeni eski "
+      + "doğru yanlış sorun problem çözüm yardım lazım gerek istiyorum istemiyorum biliyorum bilmiyorum "
+      + "düşünüyorum sanırım galiba herhalde muhtemelen kesinlikle mutlaka aynen katılıyorum tamamdır "
+      + "olsun neyse hadi haydi dikkat acaba sizce bence nedir neden niye nasılsınız iyiyim iyiyiz";
+
+    private final java.util.HashMap<String, Integer> words = new java.util.HashMap<String, Integer>();
+    private final StringBuilder cur = new StringBuilder();
+    private int learnCount = 0;
+    private final Locale TR = new Locale("tr", "TR");
+
+    private void loadWords() {
+        words.clear();
+        for (String w : BUILTIN.split(" ")) {
+            if (w.length() > 0) words.put(w, 1);
+        }
+        String saved = getSharedPreferences("sesli", MODE_PRIVATE).getString("words", "");
+        for (String e : saved.split(",")) {
+            int i = e.lastIndexOf(':');
+            if (i <= 0) continue;
+            try {
+                words.put(e.substring(0, i), Integer.parseInt(e.substring(i + 1)));
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private void learn(String w) {
+        if (w == null) return;
+        w = w.toLowerCase(TR);
+        if (w.length() < 2) return;
+        Integer c = words.get(w);
+        words.put(w, (c == null ? 0 : c) + 3);
+        if (++learnCount % 8 == 0) saveWords();
+    }
+
+    private void saveWords() {
+        StringBuilder sb = new StringBuilder();
+        int n = 0;
+        for (java.util.Map.Entry<String, Integer> e : words.entrySet()) {
+            if (e.getValue() <= 1) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(e.getKey()).append(':').append(e.getValue());
+            if (++n > 3000) break;
+        }
+        getSharedPreferences("sesli", MODE_PRIVATE).edit().putString("words", sb.toString()).apply();
+    }
+
+    private void updateSuggestions() {
+        if (sugg[0] == null) return;
+        String[] out = new String[]{"", "", ""};
+        if (cur.length() == 0) {
+            out = new String[]{"Merhaba", "Tamam", "Teşekkürler"};
+        } else {
+            String p = cur.toString().toLowerCase(TR);
+            int[] sc = new int[]{-1, -1, -1};
+            for (java.util.Map.Entry<String, Integer> e : words.entrySet()) {
+                String w = e.getKey();
+                if (w.length() <= p.length() || !w.startsWith(p)) continue;
+                int s = e.getValue() * 100 - w.length();
+                for (int i = 0; i < 3; i++) {
+                    if (s > sc[i]) {
+                        for (int j = 2; j > i; j--) { sc[j] = sc[j - 1]; out[j] = out[j - 1]; }
+                        sc[i] = s;
+                        out[i] = w;
+                        break;
+                    }
+                }
+            }
+            boolean capFirst = Character.isUpperCase(cur.charAt(0));
+            for (int i = 0; i < 3; i++) {
+                if (out[i].length() > 0 && capFirst)
+                    out[i] = out[i].substring(0, 1).toUpperCase(TR) + out[i].substring(1);
+            }
+            if (out[0].length() == 0) out[0] = cur.toString();
+        }
+        for (int i = 0; i < 3; i++) sugg[i].setText(out[i]);
+    }
+
+    private void pickSuggestion(int i) {
+        String w = sugg[i].getText().toString();
+        if (w.length() == 0) return;
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        if (cur.length() > 0) ic.deleteSurroundingText(cur.length(), 0);
+        ic.commitText(w + " ", 1);
+        learn(w);
+        cur.setLength(0);
+        updateSuggestions();
+        if (shift == 1) { shift = 0; refreshLabels(); }
+    }
+
+    private void paintNav() {
+        try {
+            android.view.Window w = getWindow().getWindow();
+            if (w == null) return;
+            w.setNavigationBarColor(0xFF0B0B0F);
+            View d = w.getDecorView();
+            d.setSystemUiVisibility(d.getSystemUiVisibility()
+                    & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        } catch (Exception ignored) { }
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        loadWords();
+        paintNav();
+    }
 
     @Override
     public View onCreateInputView() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.parseColor("#0B0B0F"));
-        root.setPadding(dp(4), dp(6), dp(4), dp(4));
+        root.setPadding(dp(2), dp(2), dp(2), dp(6));
 
-        // Üst çubuk: solda durum/yazı, sağda büyük mikrofon
+        // Üst çubuk: öneriler (veya durum yazısı) + mikrofon
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(dp(8), 0, dp(4), dp(4));
 
-        LinearLayout texts = new LinearLayout(this);
-        texts.setOrientation(LinearLayout.VERTICAL);
-        status = label(15, Color.WHITE);
-        status.setGravity(Gravity.START);
-        status.setText("Konuşmak için mikrofona dokun \u2192");
-        texts.addView(status, wrapWidth());
-        partial = label(16, Color.parseColor("#64D2FF"));
-        partial.setGravity(Gravity.START);
-        partial.setMaxLines(1);
-        partial.setEllipsize(android.text.TextUtils.TruncateAt.START);
-        texts.addView(partial, wrapWidth());
-        top.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        bar = new FrameLayout(this);
+        suggRow = new LinearLayout(this);
+        suggRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < 3; i++) {
+            final int idx = i;
+            TextView t = new TextView(this);
+            t.setTextColor(Color.WHITE);
+            t.setTextSize(19);
+            t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setGravity(Gravity.CENTER);
+            t.setSingleLine(true);
+            t.setOnTouchListener(new View.OnTouchListener() {
+                @Override public boolean onTouch(View v, MotionEvent e) {
+                    if (e.getAction() == MotionEvent.ACTION_DOWN) pickSuggestion(idx);
+                    return true;
+                }
+            });
+            sugg[i] = t;
+            suggRow.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        }
+        bar.addView(suggRow, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        status = label(16, Color.parseColor("#64D2FF"));
+        status.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        status.setPadding(dp(10), 0, dp(6), 0);
+        status.setMaxLines(2);
+        status.setVisibility(View.GONE);
+        bar.addView(status, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        top.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         micBtn = new FrameLayout(this);
         paintMic(false);
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.drawable.ic_mic);
-        int p = dp(12);
+        int p = dp(9);
         icon.setPadding(p, p, p, p);
-        micBtn.addView(icon, new FrameLayout.LayoutParams(dp(56), dp(56)));
-        micBtn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { onMicTap(); }
+        micBtn.addView(icon, new FrameLayout.LayoutParams(dp(46), dp(46)));
+        micBtn.setOnTouchListener(new View.OnTouchListener() {
+            @Override public boolean onTouch(View v, MotionEvent e) {
+                if (e.getAction() == MotionEvent.ACTION_DOWN) onMicTap();
+                return true;
+            }
         });
-        top.addView(micBtn, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        mlp.leftMargin = dp(4);
+        mlp.rightMargin = dp(6);
+        top.addView(micBtn, mlp);
         root.addView(top, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
 
         keysBox = new LinearLayout(this);
         keysBox.setOrientation(LinearLayout.VERTICAL);
         root.addView(keysBox, wrapWidth());
         buildKeys();
-
-        diag = label(11, Color.parseColor("#8E8E93"));
-        root.addView(diag, wrapWidth());
-        updateDiag();
+        updateSuggestions();
         return root;
+    }
+
+    /** Dokunma anında çalışan tuş: hızlı ve kaçırmaz (aralarda ölü boşluk yok). */
+    private TextView mkKey(String text, float weight, boolean func, final Runnable action,
+                           final boolean repeat) {
+        final TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextColor(Color.WHITE);
+        t.setTextSize(text.length() > 1 ? 17 : 23);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setGravity(Gravity.CENTER);
+        final int base = func ? KEY_FUNC : KEY_BG;
+        final GradientDrawable g = new GradientDrawable();
+        g.setColor(base);
+        g.setCornerRadius(dp(9));
+        t.setBackground(new android.graphics.drawable.InsetDrawable(
+                g, dp(2), dp(3), dp(2), dp(3)));
+        final Runnable rep = new Runnable() {
+            @Override public void run() {
+                action.run();
+                h.postDelayed(this, 55);
+            }
+        };
+        t.setOnTouchListener(new View.OnTouchListener() {
+            @Override public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        g.setColor(KEY_DOWN);
+                        action.run();
+                        if (repeat) h.postDelayed(rep, 380);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        g.setColor(base);
+                        h.removeCallbacks(rep);
+                        return true;
+                    default:
+                        return true;
+                }
+            }
+        });
+        t.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, weight));
+        return t;
     }
 
     private LinearLayout newRow() {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
-        lp.topMargin = dp(4);
-        keysBox.addView(r, lp);
+        keysBox.addView(r, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
         return r;
     }
 
     private String cased(String k) {
-        return shift > 0 ? k.toUpperCase(new Locale("tr", "TR")) : k;
+        return shift > 0 ? k.toUpperCase(TR) : k;
+    }
+
+    private void refreshLabels() {
+        for (int i = 0; i < letterViews.size(); i++)
+            letterViews.get(i).setText(cased(letterBase.get(i)));
+        if (shiftKey != null) {
+            shiftKey.setText(shift == 2 ? "⇪" : "⇧");
+            shiftKey.setTextColor(shift > 0 ? Color.parseColor("#0A84FF") : Color.WHITE);
+        }
     }
 
     private void buildKeys() {
         if (keysBox == null) return;
         keysBox.removeAllViews();
+        letterViews.clear();
+        letterBase.clear();
+        shiftKey = null;
         String[][] rows = page == 0 ? LET : SYM;
 
         for (int i = 0; i < 3; i++) {
             LinearLayout r = newRow();
             if (i == 2 && page == 0) {
-                TextView sh = key(shift == 2 ? "\u21ea" : "\u21e7", 1.5f, new View.OnClickListener() {
-                    @Override public void onClick(View v) {
+                shiftKey = mkKey("⇧", 1.5f, true, new Runnable() {
+                    @Override public void run() {
                         long now = System.currentTimeMillis();
-                        if (now - lastShiftTap < 400) shift = 2;
+                        if (now - lastShiftTap < 350) shift = 2;
                         else shift = (shift == 0) ? 1 : 0;
                         lastShiftTap = now;
-                        buildKeys();
+                        refreshLabels();
                     }
-                });
-                if (shift > 0) sh.setTextColor(Color.parseColor("#0A84FF"));
-                r.addView(sh);
+                }, false);
+                r.addView(shiftKey);
             }
             for (final String k : rows[i]) {
-                final String shown = page == 0 ? cased(k) : k;
-                r.addView(key(shown, 1f, new View.OnClickListener() {
-                    @Override public void onClick(View v) { typeKey(shown); }
-                }));
+                final TextView[] holder = new TextView[1];
+                TextView kv = mkKey(page == 0 ? cased(k) : k, 1f, false, new Runnable() {
+                    @Override public void run() {
+                        typeKey(page == 0 ? cased(k) : k);
+                    }
+                }, false);
+                holder[0] = kv;
+                if (page == 0) { letterViews.add(kv); letterBase.add(k); }
+                r.addView(kv);
             }
             if (i == 2) {
-                TextView del = key("\u232b", 1.5f, null);
-                del.setOnTouchListener(new RepeatTouch());
-                r.addView(del);
+                r.addView(mkKey("⌫", 1.5f, true, new Runnable() {
+                    @Override public void run() { doDelete(); }
+                }, true));
             }
         }
 
         LinearLayout b = newRow();
-        b.addView(key(page == 0 ? "123" : "ABC", 1.4f, new View.OnClickListener() {
-            @Override public void onClick(View v) { page = 1 - page; buildKeys(); }
-        }));
-        b.addView(key("\uD83C\uDF10", 1f, new View.OnClickListener() {
-            @Override public void onClick(View v) {
+        b.addView(mkKey(page == 0 ? "123" : "ABC", 1.4f, true, new Runnable() {
+            @Override public void run() { page = 1 - page; buildKeys(); }
+        }, false));
+        b.addView(mkKey("🌐", 1.1f, true, new Runnable() {
+            @Override public void run() {
                 stopAll();
                 InputMethodManager imm =
                         (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
                 imm.showInputMethodPicker();
             }
-        }));
-        b.addView(key("Bo\u015fluk", 4f, new View.OnClickListener() {
-            @Override public void onClick(View v) { commitRaw(" "); }
-        }));
-        b.addView(key(".", 1f, new View.OnClickListener() {
-            @Override public void onClick(View v) { typeKey("."); }
-        }));
-        b.addView(key("\u21b5", 1.4f, new View.OnClickListener() {
-            @Override public void onClick(View v) {
+        }, false));
+        b.addView(mkKey(",", 1f, false, new Runnable() {
+            @Override public void run() { typeKey(","); }
+        }, false));
+        b.addView(mkKey("Türkçe", 4f, false, new Runnable() {
+            @Override public void run() { doSpace(); }
+        }, false));
+        b.addView(mkKey(".", 1f, false, new Runnable() {
+            @Override public void run() { typeKey("."); }
+        }, false));
+        b.addView(mkKey("↵", 1.4f, true, new Runnable() {
+            @Override public void run() {
+                cur.setLength(0);
                 if (!sendDefaultEditorAction(true)) sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
+                updateSuggestions();
             }
-        }));
+        }, false));
+    }
+
+    private void leaveStatus() {
+        if (!listening && status != null && status.getVisibility() == View.VISIBLE) {
+            status.setVisibility(View.GONE);
+            suggRow.setVisibility(View.VISIBLE);
+        }
     }
 
     private void typeKey(String s) {
-        commitRaw(s);
-        if (s.equals(".") || s.equals("?") || s.equals("!")) {
-            if (page == 0 && shift != 2) { shift = 1; buildKeys(); }
-        } else if (shift == 1 && page == 0) {
-            shift = 0;
-            buildKeys();
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        ic.commitText(s, 1);
+        leaveStatus();
+        boolean letter = Character.isLetter(s.charAt(0));
+        if (letter) {
+            cur.append(s);
+            if (shift == 1) { shift = 0; refreshLabels(); }
+        } else {
+            learn(cur.toString());
+            cur.setLength(0);
+            if ((s.equals(".") || s.equals("?") || s.equals("!")) && page == 0 && shift != 2) {
+                shift = 1;
+                refreshLabels();
+            }
         }
+        updateSuggestions();
+    }
+
+    private void doSpace() {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        ic.commitText(" ", 1);
+        leaveStatus();
+        learn(cur.toString());
+        cur.setLength(0);
+        updateSuggestions();
+    }
+
+    private void doDelete() {
+        if (cur.length() > 0) cur.setLength(cur.length() - 1);
+        sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL);
+        updateSuggestions();
     }
 
     private void autoShift() {
@@ -253,7 +506,7 @@ public class VoiceIME extends InputMethodService {
         String t = b == null ? "" : b.toString().trim();
         boolean cap = t.isEmpty() || t.endsWith(".") || t.endsWith("?") || t.endsWith("!");
         int ns = cap ? 1 : 0;
-        if (shift != 2 && ns != shift) { shift = ns; buildKeys(); }
+        if (shift != 2 && ns != shift) { shift = ns; refreshLabels(); }
     }
 
     private LinearLayout.LayoutParams wrapWidth() {
@@ -270,25 +523,6 @@ public class VoiceIME extends InputMethodService {
         return t;
     }
 
-    private TextView key(String text, float weight, View.OnClickListener click) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextColor(Color.WHITE);
-        t.setTextSize(21);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setGravity(Gravity.CENTER);
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(Color.parseColor("#2C2C2E"));
-        g.setCornerRadius(dp(14));
-        t.setBackground(g);
-        if (click != null) t.setOnClickListener(click);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.MATCH_PARENT, weight);
-        lp.setMargins(dp(3), 0, dp(3), 0);
-        t.setLayoutParams(lp);
-        return t;
-    }
-
     private void paintMic(boolean active) {
         if (micBtn == null) return;
         GradientDrawable g = new GradientDrawable(
@@ -299,11 +533,26 @@ public class VoiceIME extends InputMethodService {
     }
 
     private void setStatus(String s) {
-        if (status != null) status.setText(s);
+        if (status == null) return;
+        if (s.startsWith("Konuşmak için")) {
+            status.setVisibility(View.GONE);
+            suggRow.setVisibility(View.VISIBLE);
+            return;
+        }
+        status.setText(s);
+        suggRow.setVisibility(View.GONE);
+        status.setVisibility(View.VISIBLE);
     }
 
     private void setPartial(String s) {
-        if (partial != null) partial.setText(s);
+        if (status == null) return;
+        if (s.length() > 0) {
+            status.setText(s);
+            suggRow.setVisibility(View.GONE);
+            status.setVisibility(View.VISIBLE);
+        } else if (listening) {
+            status.setText("Dinliyorum… konuş");
+        }
     }
 
     private void updateDiag() {
@@ -374,7 +623,11 @@ public class VoiceIME extends InputMethodService {
         setStatus("Konuşmak için mikrofona dokun \u2192");
         setPartial("");
         page = 0;
+        cur.setLength(0);
+        buildKeys();
         autoShift();
+        updateSuggestions();
+        paintNav();
     }
 
     @Override
@@ -705,7 +958,7 @@ public class VoiceIME extends InputMethodService {
                 setStatus("Mikrofon izni yok. Sesli Yazı uygulamasını açıp izin ver");
                 break;
             default:
-                setStatus("Konuşma tanıma çalışmadı. Alttaki hata kodunu bana yaz");
+                setStatus("Konuşma tanıma çalışmadı (hata: " + lastErr + ")");
                 break;
         }
     }
