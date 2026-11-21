@@ -252,6 +252,11 @@ public class MicService extends AccessibilityService {
             update();
         } catch (Exception e) {
             info = "HATA: " + e;
+            String err = "HATA: " + e;
+            if (history.isEmpty() || !history.get(0).endsWith(err)) {
+                history.add(0, "--  " + err);
+                while (history.size() > 30) history.remove(history.size() - 1);
+            }
             if (!errorShown) {
                 errorShown = true;
                 toast("Sesli Yazı hata: " + e);
@@ -316,7 +321,8 @@ public class MicService extends AccessibilityService {
             AccessibilityNodeInfo ar = getRootInActiveWindow();
             activePkg = ar == null ? "boş" : String.valueOf(ar.getPackageName()).replace("com.", "");
         } catch (Exception ignored) { }
-        boolean noise = activePkg.contains("screenshot") || activePkg.contains("systemui");
+        boolean noise = activePkg.contains("screenshot") || activePkg.contains("systemui")
+                || activePkg.contains("sesliyazi") || activePkg.contains("launcher");
         String brief = activePkg
                 + " | Klavye " + (kb >= 0 ? "VAR" : kb == -1 ? "YOK" : "?")
                 + " | Kutu " + (f == null ? "YOK" : editable ? "VAR" : "yazılamaz")
@@ -326,7 +332,7 @@ public class MicService extends AccessibilityService {
             lastToast = brief;
             java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("HH:mm:ss", Locale.US);
             history.add(0, fmt.format(new java.util.Date()) + "  " + brief);
-            while (history.size() > 8) history.remove(history.size() - 1);
+            while (history.size() > 30) history.remove(history.size() - 1);
         }
 
         if (f != null && f.isPassword()) {
