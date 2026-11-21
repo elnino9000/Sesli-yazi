@@ -74,7 +74,18 @@ public class MicService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         events++;
         try {
-            if (event.getPackageName() != null) lastPkg = event.getPackageName().toString();
+            if (event.getPackageName() != null) {
+                lastPkg = event.getPackageName().toString();
+                synchronized (evPkgs) {
+                    Integer c = evPkgs.get(lastPkg);
+                    evPkgs.put(lastPkg, c == null ? 1 : c + 1);
+                    while (evPkgs.size() > 12) {
+                        java.util.Iterator<String> it = evPkgs.keySet().iterator();
+                        it.next();
+                        it.remove();
+                    }
+                }
+            }
             int t = event.getEventType();
             if (t == AccessibilityEvent.TYPE_VIEW_FOCUSED
                     || t == AccessibilityEvent.TYPE_VIEW_CLICKED
@@ -199,6 +210,8 @@ public class MicService extends AccessibilityService {
     static volatile boolean connected = false;
     static volatile int events = 0;
     static volatile String info = "";
+    static final java.util.LinkedHashMap<String, Integer> evPkgs =
+            new java.util.LinkedHashMap<String, Integer>(16, 0.75f, true);
     static volatile int checks = 0;
     static volatile String lastCheck = "-";
     static final java.util.List<String> history =

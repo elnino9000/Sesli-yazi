@@ -140,6 +140,15 @@ public class MainActivity extends Activity {
                         .append("\nAlınan olay: ").append(MicService.events)
                         .append("\nKontrol: ").append(MicService.checks)
                         .append(" (son ").append(MicService.lastCheck).append(")");
+                sb.append("\n\nOlay gelen uygulamalar (son görülen üstte):");
+                java.util.ArrayList<String> ev = new java.util.ArrayList<>();
+                synchronized (MicService.evPkgs) {
+                    for (java.util.Map.Entry<String, Integer> e : MicService.evPkgs.entrySet()) {
+                        ev.add(e.getKey().replace("com.", "") + ": " + e.getValue());
+                    }
+                }
+                java.util.Collections.reverse(ev);
+                for (String s : ev) sb.append("\n").append(s);
                 sb.append("\n\nSon durumlar (en yeni üstte):");
                 synchronized (MicService.history) {
                     for (String s : MicService.history) sb.append("\n").append(s);
