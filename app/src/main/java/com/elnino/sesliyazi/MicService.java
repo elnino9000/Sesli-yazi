@@ -73,6 +73,17 @@ public class MicService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         events++;
+        try {
+            if (event.getPackageName() != null) lastPkg = event.getPackageName().toString();
+            int t = event.getEventType();
+            if (t == AccessibilityEvent.TYPE_VIEW_FOCUSED
+                    || t == AccessibilityEvent.TYPE_VIEW_CLICKED
+                    || t == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
+                    || t == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
+                AccessibilityNodeInfo src = event.getSource();
+                if (src != null && src.isEditable()) lastSource = src;
+            }
+        } catch (Exception ignored) { }
         // Klavye bazen gecikmeli açılır: birkaç kez tekrar kontrol et
         handler.removeCallbacks(updateRun);
         handler.postDelayed(updateRun, 120);
@@ -162,6 +173,27 @@ public class MicService extends AccessibilityService {
     private static final int KB_UNKNOWN = -2;
     private boolean errorShown = false;
     private boolean imeSeen = false;
+    private AccessibilityNodeInfo lastSource;
+    private String lastPkg = "";
+    private String lastToast = "";
+    private long lastToastAt = 0;
+
+    private String windowsSummary() {
+        try {
+            List<AccessibilityWindowInfo> ws = getWindows();
+            if (ws == null) return "yok";
+            StringBuilder sb = new StringBuilder();
+            for (AccessibilityWindowInfo w : ws) {
+                int t = w.getType();
+                sb.append(t == AccessibilityWindowInfo.TYPE_APPLICATION ? "U"
+                        : t == AccessibilityWindowInfo.TYPE_INPUT_METHOD ? "K"
+                        : t == AccessibilityWindowInfo.TYPE_SYSTEM ? "S" : "?");
+            }
+            return ws.size() + " (" + sb + ")";
+        } catch (Exception e) {
+            return "hata";
+        }
+    }
 
     // Açılış ekranındaki "Durum" satırı için
     static volatile boolean connected = false;
@@ -263,11 +295,31 @@ public class MicService extends AccessibilityService {
         if (kb >= 0) imeSeen = true;
         AccessibilityNodeInfo f = findInput();
         if (f == null) f = scanForEditable();
+        if (f == null && lastSource != null) {
+            try {
+                if (lastSource.refresh() && lastSource.isFocused()) f = lastSource;
+            } catch (Exception ignored) { }
+        }
         boolean editable = f != null && f.isEditable();
 
         info = "Klavye: " + (kb >= 0 ? "görüyorum" : kb == -1 ? "göremiyorum" : "bilgi yok")
                 + "\nYazı kutusu: " + (f == null ? "bulamıyorum" : editable ? "buldum" : "var ama yazılamaz")
-                + "\nSimge: " + (shown ? "gösteriliyor" : "gizli");
+                + "\nSimge: " + (shown ? "gösteriliyor" : "gizli")
+                + "\nPencereler: " + windowsSummary()
+                + "\nSon uygulama: " + lastPkg;
+
+        // Teşhis: başka uygulamalarda durum değişince kısa mesaj göster
+        String brief = (lastPkg.equals(getPackageName()) ? "" : lastPkg.replace("com.", ""))
+                + "\nKlavye " + (kb >= 0 ? "VAR" : kb == -1 ? "YOK" : "?")
+                + " | Kutu " + (f == null ? "YOK" : editable ? "VAR" : "yazılamaz")
+                + " | Pencere " + windowsSummary();
+        long now = System.currentTimeMillis();
+        if (!brief.equals(lastToast) && now - lastToastAt > 2500
+                && !lastPkg.equals(getPackageName())) {
+            lastToast = brief;
+            lastToastAt = now;
+            toast(brief);
+        }
 
         if (f != null && f.isPassword()) {
             endListening(true);
