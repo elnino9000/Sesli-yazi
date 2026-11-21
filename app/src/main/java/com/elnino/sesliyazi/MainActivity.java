@@ -137,7 +137,9 @@ public class MainActivity extends Activity {
             if (debug != null) {
                 StringBuilder sb = new StringBuilder();
                 sb.append("Servis: ").append(MicService.connected ? "çalışıyor" : "çalışmıyor")
-                        .append("\nAlınan olay: ").append(MicService.events);
+                        .append("\nAlınan olay: ").append(MicService.events)
+                        .append("\nKontrol: ").append(MicService.checks)
+                        .append(" (son ").append(MicService.lastCheck).append(")");
                 sb.append("\n\nSon durumlar (en yeni üstte):");
                 synchronized (MicService.history) {
                     for (String s : MicService.history) sb.append("\n").append(s);

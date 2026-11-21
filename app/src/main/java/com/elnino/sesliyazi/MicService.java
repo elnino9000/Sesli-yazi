@@ -199,6 +199,8 @@ public class MicService extends AccessibilityService {
     static volatile boolean connected = false;
     static volatile int events = 0;
     static volatile String info = "";
+    static volatile int checks = 0;
+    static volatile String lastCheck = "-";
     static final java.util.List<String> history =
             java.util.Collections.synchronizedList(new ArrayList<String>());
 
@@ -297,32 +299,35 @@ public class MicService extends AccessibilityService {
         return null;
     }
 
+    private String activePackage() {
+        try {
+            AccessibilityNodeInfo ar = getRootInActiveWindow();
+            return ar == null ? "boş" : String.valueOf(ar.getPackageName()).replace("com.", "");
+        } catch (Exception e) {
+            return "hata";
+        }
+    }
+
     private void update() {
+        checks++;
+        lastCheck = new java.text.SimpleDateFormat("HH:mm:ss", Locale.US).format(new java.util.Date());
+
         int kb = keyboardTop();
         if (kb >= 0) imeSeen = true;
+        String activePkg = activePackage();
+
+        // Hafif arama: odaktaki kutuyu sistemden iste. Ağır taramayı sadece klavye bilgisi yoksa yap.
         AccessibilityNodeInfo f = findInput();
-        if (f == null) f = scanForEditable();
         if (f == null && lastSource != null) {
             try {
                 if (lastSource.refresh() && lastSource.isFocused()) f = lastSource;
             } catch (Exception ignored) { }
         }
+        if (f == null && kb < 0 && !imeSeen) f = scanForEditable();
         boolean editable = f != null && f.isEditable();
 
-        info = "Klavye: " + (kb >= 0 ? "görüyorum" : kb == -1 ? "göremiyorum" : "bilgi yok")
-                + "\nYazı kutusu: " + (f == null ? "bulamıyorum" : editable ? "buldum" : "var ama yazılamaz")
-                + "\nSimge: " + (shown ? "gösteriliyor" : "gizli")
-                + "\nPencereler: " + windowsSummary()
-                + "\nSon uygulama: " + lastPkg;
-
-        // Teşhis kaydı: durum değişince son 8 satırı sakla (uygulamadaki Durum kutusunda görünür)
-        String activePkg = "?";
-        try {
-            AccessibilityNodeInfo ar = getRootInActiveWindow();
-            activePkg = ar == null ? "boş" : String.valueOf(ar.getPackageName()).replace("com.", "");
-        } catch (Exception ignored) { }
-        boolean noise = activePkg.contains("screenshot") || activePkg.contains("systemui")
-                || activePkg.contains("sesliyazi") || activePkg.contains("launcher");
+        // Teşhis kaydı (uygulamadaki Durum kutusunda görünür)
+        boolean noise = activePkg.contains("screenshot") || activePkg.contains("systemui");
         String brief = activePkg
                 + " | Klavye " + (kb >= 0 ? "VAR" : kb == -1 ? "YOK" : "?")
                 + " | Kutu " + (f == null ? "YOK" : editable ? "VAR" : "yazılamaz")
@@ -330,9 +335,8 @@ public class MicService extends AccessibilityService {
                 + " | simge " + (shown ? "açık" : "kapalı");
         if (!noise && !brief.equals(lastToast)) {
             lastToast = brief;
-            java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("HH:mm:ss", Locale.US);
-            history.add(0, fmt.format(new java.util.Date()) + "  " + brief);
-            while (history.size() > 30) history.remove(history.size() - 1);
+            history.add(0, lastCheck + "  " + brief);
+            while (history.size() > 40) history.remove(history.size() - 1);
         }
 
         if (f != null && f.isPassword()) {
@@ -378,6 +382,12 @@ public class MicService extends AccessibilityService {
 
     private void startListening() {
         AccessibilityNodeInfo f = findInput();
+        if (f == null) f = scanForEditable();
+        if (f == null && lastSource != null) {
+            try {
+                if (lastSource.refresh()) f = lastSource;
+            } catch (Exception ignored) { }
+        }
         if (f == null) {
             toast("Yazı kutusu bulunamadı. Kutuya bir kez daha dokunup tekrar dene");
             return;
