@@ -149,6 +149,10 @@ public class MainActivity extends Activity {
                 }
                 java.util.Collections.reverse(ev);
                 for (String s : ev) sb.append("\n").append(s);
+                sb.append("\n\nOlay ayrıntısı (başka uygulamalar):");
+                synchronized (MicService.evLog) {
+                    for (String s : MicService.evLog) sb.append("\n").append(s);
+                }
                 sb.append("\n\nSon durumlar (en yeni üstte):");
                 synchronized (MicService.history) {
                     for (String s : MicService.history) sb.append("\n").append(s);

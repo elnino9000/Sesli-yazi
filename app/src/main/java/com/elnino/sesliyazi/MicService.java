@@ -74,6 +74,38 @@ public class MicService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         events++;
         try {
+            // Teşhis: başka uygulamalardan gelen olayların türü ve kaynağı
+            String ep = event.getPackageName() == null ? "?" : event.getPackageName().toString();
+            int et = event.getEventType();
+            if (!ep.equals(getPackageName()) && !ep.contains("swiftkey") && !ep.contains("systemui")
+                    && et != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+                String src = "kaynak yok";
+                try {
+                    AccessibilityNodeInfo s = event.getSource();
+                    if (s != null) {
+                        src = (s.isEditable() ? "YAZI " : "başka ") + s.getClassName();
+                    }
+                } catch (Exception e) {
+                    src = "kaynak hata";
+                }
+                String d = ep.replace("com.", "") + " "
+                        + AccessibilityEvent.eventTypeToString(et).replace("TYPE_", "") + " " + src;
+                synchronized (evLog) {
+                    if (evLog.isEmpty() || !evLog.get(0).endsWith(d)) {
+                        evLog.add(0, new java.text.SimpleDateFormat("HH:mm:ss", Locale.US)
+                                .format(new java.util.Date()) + " " + d);
+                        while (evLog.size() > 14) evLog.remove(evLog.size() - 1);
+                    }
+                }
+            }
+            if (et == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+                if (event.getPackageName() != null) {
+                    // sadece sayaç, ağır işlem yapma
+                }
+                return;
+            }
+        } catch (Exception ignored) { }
+        try {
             if (event.getPackageName() != null) {
                 lastPkg = event.getPackageName().toString();
                 synchronized (evPkgs) {
@@ -227,6 +259,8 @@ public class MicService extends AccessibilityService {
     static volatile String info = "";
     static final java.util.LinkedHashMap<String, Integer> evPkgs =
             new java.util.LinkedHashMap<String, Integer>(16, 0.75f, true);
+    static final java.util.List<String> evLog =
+            java.util.Collections.synchronizedList(new ArrayList<String>());
     static volatile int checks = 0;
     static volatile String lastCheck = "-";
     static final java.util.List<String> history =
