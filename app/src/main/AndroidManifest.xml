@@ -3,11 +3,16 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Android 11+: konuşma tanıma servisini görebilmek için -->
+    <!-- Android 11+: konuşma tanıma servislerini ve diğer klavyeleri görebilmek için -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <intent>
+            <action android:name="android.view.InputMethod" />
+        </intent>
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.tts" />
     </queries>
 
     <application

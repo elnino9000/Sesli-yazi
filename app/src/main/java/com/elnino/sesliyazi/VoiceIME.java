@@ -3,9 +3,12 @@ package com.elnino.sesliyazi;
 import android.Manifest;
 import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -16,6 +19,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.speech.RecognitionListener;
+import android.speech.RecognitionService;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.text.InputType;
@@ -26,6 +30,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -33,75 +38,113 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
- * Sesli Klavye: açılınca otomatik dinler, söylenenleri odaktaki yazı kutusuna yazar.
- * Klavye olduğu için her uygulamada (WhatsApp, Notlar, tarayıcı...) çalışır.
+ * Sesli Klavye.
+ *
+ * Klavye olarak seçilince kendiliğinden dinler; söylenenleri odaktaki yazı kutusuna yazar.
+ * Klavye olduğu için her uygulamada çalışır (başka uygulamalar klavyeyi gizleyemez).
+ *
+ * Güvenilirlik için:
+ *  - Birden fazla konuşma tanıyıcı sırayla denenir (sistem varsayılanı, Google, diğerleri).
+ *  - Hangisinin çalıştığı ve son hata klavyenin altında yazar.
+ *  - Metin sadece kesinleşince yazılır (bazı uygulamalar geçici yazıyı bozuyor).
  */
 public class VoiceIME extends InputMethodService {
 
     private static final int[] BLUE = {0xFF0A84FF, 0xFF5E5CE6};
     private static final int[] RED = {0xFFFF453A, 0xFFFF9F0A};
 
+    private static final ComponentName GOOGLE_APP = new ComponentName(
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.voicesearch.serviceapi.GoogleRecognitionService");
+    private static final ComponentName GOOGLE_TTS = new ComponentName(
+            "com.google.android.tts",
+            "com.google.android.apps.speech.tts.googletts.service.GoogleTTSRecognitionService");
+
     private final Handler h = new Handler(Looper.getMainLooper());
 
+    // durum
     private SpeechRecognizer recognizer;
-    private boolean wanted = false;     // kullanıcı dinlenmesini istiyor (sürekli mod)
-    private boolean listening = false;
+    private boolean wanted = false;      // sürekli dinleme isteniyor
+    private boolean listening = false;   // tanıyıcı şu an çalışıyor
     private boolean password = false;
     private boolean busyRetried = false;
+    private int session = 0;             // eski tanıyıcıdan gelen gecikmiş olayları yok saymak için
 
-    private String prefix = "";
-    private boolean capNext = true;
+    // tanıyıcı adayları
+    private final List<ComponentName> cands = new ArrayList<ComponentName>();
+    private int candIdx = 0;
+    private String lastErr = "-";
 
+    // görünüm
     private TextView status;
+    private TextView partial;
+    private TextView diag;
     private FrameLayout micBtn;
     private ObjectAnimator pulse;
 
     private final Runnable autoStart = new Runnable() {
         @Override public void run() {
-            if (!listening && !password) begin();
+            if (!listening && !wanted && !password) begin();
         }
     };
 
-    // ------------------------------------------------------------ görünüm
+    // ============================================================ görünüm
+
+    @Override
+    public boolean onEvaluateFullscreenMode() {
+        return false;
+    }
 
     @Override
     public View onCreateInputView() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.parseColor("#0B0B0F"));
-        root.setPadding(dp(12), dp(10), dp(12), dp(12));
+        root.setPadding(dp(10), dp(8), dp(10), dp(8));
 
-        status = new TextView(this);
-        status.setTextColor(Color.WHITE);
-        status.setTextSize(18);
-        status.setTypeface(Typeface.DEFAULT_BOLD);
-        status.setGravity(Gravity.CENTER);
+        status = label(18, Color.WHITE);
         status.setText("Konuşmak için mikrofona dokun");
-        root.addView(status, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(status, wrapWidth());
+
+        partial = label(20, Color.parseColor("#64D2FF"));
+        partial.setMinLines(1);
+        partial.setMaxLines(2);
+        root.addView(partial, wrapWidth());
 
         micBtn = new FrameLayout(this);
         paintMic(false);
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.drawable.ic_mic);
-        int p = dp(26);
+        int p = dp(22);
         icon.setPadding(p, p, p, p);
-        micBtn.addView(icon, new FrameLayout.LayoutParams(dp(104), dp(104)));
+        micBtn.addView(icon, new FrameLayout.LayoutParams(dp(88), dp(88)));
         micBtn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { onMicTap(); }
         });
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(104), dp(104));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(88), dp(88));
         mlp.gravity = Gravity.CENTER_HORIZONTAL;
-        mlp.topMargin = dp(10);
-        mlp.bottomMargin = dp(12);
+        mlp.topMargin = dp(4);
+        mlp.bottomMargin = dp(8);
         root.addView(micBtn, mlp);
 
+        // noktalama satırı
+        LinearLayout punct = new LinearLayout(this);
+        punct.setOrientation(LinearLayout.HORIZONTAL);
+        for (final String s : new String[]{".", ",", "?", "!"}) {
+            punct.addView(key(s, 1f, new View.OnClickListener() {
+                @Override public void onClick(View v) { punctuation(s); }
+            }));
+        }
+        root.addView(punct, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+
+        // ana tuşlar
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-
         row.addView(key("🌐", 1f, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 stopAll();
@@ -111,7 +154,7 @@ public class VoiceIME extends InputMethodService {
             }
         }));
         row.addView(key("Boşluk", 2.2f, new View.OnClickListener() {
-            @Override public void onClick(View v) { commit(" "); }
+            @Override public void onClick(View v) { commitRaw(" "); }
         }));
         TextView del = key("⌫", 1f, null);
         del.setOnTouchListener(new RepeatTouch());
@@ -121,20 +164,38 @@ public class VoiceIME extends InputMethodService {
                 if (!sendDefaultEditorAction(true)) sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
             }
         }));
-        row.addView(key("Bitti", 1.4f, new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                stopAll();
-                switchBack();
-            }
+        row.addView(key("Bitti", 1.5f, new View.OnClickListener() {
+            @Override public void onClick(View v) { goBack(); }
         }));
-        root.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        rlp.topMargin = dp(4);
+        root.addView(row, rlp);
+
+        diag = label(12, Color.parseColor("#AEAEB2"));
+        diag.setPadding(0, dp(4), 0, 0);
+        root.addView(diag, wrapWidth());
+        updateDiag();
         return root;
     }
 
-    private TextView key(String label, float weight, View.OnClickListener click) {
+    private LinearLayout.LayoutParams wrapWidth() {
+        return new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private TextView label(int sp, int color) {
         TextView t = new TextView(this);
-        t.setText(label);
+        t.setTextColor(color);
+        t.setTextSize(sp);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setGravity(Gravity.CENTER);
+        return t;
+    }
+
+    private TextView key(String text, float weight, View.OnClickListener click) {
+        TextView t = new TextView(this);
+        t.setText(text);
         t.setTextColor(Color.WHITE);
         t.setTextSize(19);
         t.setTypeface(Typeface.DEFAULT_BOLD);
@@ -144,14 +205,15 @@ public class VoiceIME extends InputMethodService {
         g.setCornerRadius(dp(14));
         t.setBackground(g);
         if (click != null) t.setOnClickListener(click);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, weight);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, weight);
         lp.setMargins(dp(3), 0, dp(3), 0);
         t.setLayoutParams(lp);
         return t;
     }
 
     private void paintMic(boolean active) {
+        if (micBtn == null) return;
         GradientDrawable g = new GradientDrawable(
                 GradientDrawable.Orientation.TL_BR, active ? RED : BLUE);
         g.setShape(GradientDrawable.OVAL);
@@ -161,6 +223,16 @@ public class VoiceIME extends InputMethodService {
 
     private void setStatus(String s) {
         if (status != null) status.setText(s);
+    }
+
+    private void setPartial(String s) {
+        if (partial != null) partial.setText(s);
+    }
+
+    private void updateDiag() {
+        if (diag == null) return;
+        String rec = (candIdx >= 0 && candIdx < cands.size()) ? shortName(cands.get(candIdx)) : "-";
+        diag.setText("Tanıyıcı: " + rec + "   Son hata: " + lastErr);
     }
 
     private int dp(int v) {
@@ -195,11 +267,13 @@ public class VoiceIME extends InputMethodService {
         }
     }
 
-    // ------------------------------------------------------- klavye yaşamı
+    // ======================================================== klavye yaşamı
 
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
+        h.removeCallbacks(autoStart);
+
         int cls = info.inputType & InputType.TYPE_MASK_CLASS;
         int var = info.inputType & InputType.TYPE_MASK_VARIATION;
         password = (cls == InputType.TYPE_CLASS_TEXT
@@ -208,13 +282,21 @@ public class VoiceIME extends InputMethodService {
                 || var == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD))
                 || (cls == InputType.TYPE_CLASS_NUMBER
                 && var == InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-        h.removeCallbacks(autoStart);
+
         if (password) {
+            stopAll();
             setStatus("Şifre kutusunda ses kullanılamaz. 🌐 ile klavyeni seç");
+            setPartial("");
             return;
         }
+        if (info.inputType == InputType.TYPE_NULL) {
+            setStatus("Bu alana yazılamıyor");
+            return;
+        }
+        if (listening || wanted) return;   // zaten dinliyoruz
         setStatus("Konuşmak için mikrofona dokun");
-        h.postDelayed(autoStart, 400);
+        setPartial("");
+        h.postDelayed(autoStart, 500);
     }
 
     @Override
@@ -226,27 +308,49 @@ public class VoiceIME extends InputMethodService {
 
     @Override
     public void onDestroy() {
+        h.removeCallbacksAndMessages(null);
         stopAll();
         super.onDestroy();
     }
 
-    private void switchBack() {
+    /** Eski klavyene (SwiftKey vb.) döner. */
+    private void goBack() {
+        stopAll();
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        boolean ok;
-        if (Build.VERSION.SDK_INT >= 28) {
-            ok = switchToPreviousInputMethod();
-        } else {
-            IBinder token = getWindow().getWindow().getAttributes().token;
-            ok = imm.switchToLastInputMethod(token);
-        }
-        if (!ok) imm.showInputMethodPicker();
+        try {
+            if (Build.VERSION.SDK_INT >= 28) {
+                if (switchToPreviousInputMethod()) return;
+                String other = findOtherIme(imm);
+                if (other != null) {
+                    switchInputMethod(other);
+                    return;
+                }
+            } else {
+                IBinder token = getWindow().getWindow().getAttributes().token;
+                if (imm.switchToLastInputMethod(token)) return;
+            }
+        } catch (Exception ignored) { }
+        imm.showInputMethodPicker();
     }
 
-    // ------------------------------------------------------------- dinleme
+    private String findOtherIme(InputMethodManager imm) {
+        String fallback = null;
+        for (InputMethodInfo i : imm.getEnabledInputMethodList()) {
+            String pkg = i.getPackageName();
+            if (pkg.equals(getPackageName())) continue;
+            if (pkg.contains("voicesearch") || pkg.contains("googlequicksearchbox")) continue;
+            if (pkg.contains("swiftkey")) return i.getId();
+            if (fallback == null) fallback = i.getId();
+        }
+        return fallback;
+    }
+
+    // ============================================================ dinleme
 
     private void onMicTap() {
         if (password) return;
         if (listening) {
+            // Durdur: o ana kadar söylenenler yazılır
             wanted = false;
             if (recognizer != null) {
                 try { recognizer.stopListening(); } catch (Exception ignored) { }
@@ -260,35 +364,88 @@ public class VoiceIME extends InputMethodService {
     private void begin() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
+            lastErr = "mikrofon izni yok";
+            updateDiag();
             setStatus("Mikrofon izni yok. Sesli Yazı uygulamasını açıp izin ver");
             return;
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            setStatus("Konuşma tanıma yok (Google uygulaması gerekli)");
+        buildCandidates();
+        if (cands.isEmpty()) {
+            setStatus("Konuşma tanıma servisi yok (Google uygulaması gerekli)");
             return;
         }
+        candIdx = 0;
         wanted = true;
         busyRetried = false;
         startRecognizer();
     }
 
+    /** Denenecek tanıyıcılar: önce daha önce çalışan, sonra sistem varsayılanı, Google, diğerleri. */
+    private void buildCandidates() {
+        cands.clear();
+        PackageManager pm = getPackageManager();
+
+        String good = getSharedPreferences("sesli", MODE_PRIVATE).getString("good", null);
+        if (good != null) {
+            ComponentName c = ComponentName.unflattenFromString(good);
+            if (c != null && serviceExists(pm, c)) cands.add(c);
+        }
+        cands.add(null);   // sistem varsayılanı
+        addIfExists(pm, GOOGLE_APP);
+        addIfExists(pm, GOOGLE_TTS);
+        try {
+            List<ResolveInfo> all = pm.queryIntentServices(
+                    new Intent(RecognitionService.SERVICE_INTERFACE), 0);
+            for (ResolveInfo ri : all) {
+                if (ri.serviceInfo == null) continue;
+                addIfExists(pm, new ComponentName(ri.serviceInfo.packageName, ri.serviceInfo.name));
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private boolean serviceExists(PackageManager pm, ComponentName c) {
+        try {
+            pm.getServiceInfo(c, 0);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void addIfExists(PackageManager pm, ComponentName c) {
+        if (!cands.contains(c) && serviceExists(pm, c)) cands.add(c);
+    }
+
+    private String shortName(ComponentName c) {
+        if (c == null) return "sistem";
+        String p = c.getPackageName();
+        if (p.contains("googlequicksearchbox")) return "google";
+        if (p.contains("google.android.tts")) return "google-tts";
+        int i = p.lastIndexOf('.');
+        return i >= 0 ? p.substring(i + 1) : p;
+    }
+
     private void startRecognizer() {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) {
-            setStatus("Yazı kutusu bulunamadı");
+        if (getCurrentInputConnection() == null) {
             wanted = false;
+            setStatus("Yazı kutusu bulunamadı");
             return;
         }
-        // Yazının başında mıyız, cümle sonunda mıyız: baş harf ve boşluk kararı
-        CharSequence before = ic.getTextBeforeCursor(3, 0);
-        String b = before == null ? "" : before.toString();
-        prefix = (!b.isEmpty() && !Character.isWhitespace(b.charAt(b.length() - 1))) ? " " : "";
-        String t = b.trim();
-        capNext = t.isEmpty() || t.endsWith(".") || t.endsWith("?") || t.endsWith("!");
-
         destroyRecognizer();
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this);
-        recognizer.setRecognitionListener(new Listener());
+        session++;
+        final int mySession = session;
+        ComponentName c = cands.get(candIdx);
+        updateDiag();
+
+        try {
+            recognizer = (c == null)
+                    ? SpeechRecognizer.createSpeechRecognizer(this)
+                    : SpeechRecognizer.createSpeechRecognizer(this, c);
+        } catch (Exception e) {
+            handleError(5, mySession);
+            return;
+        }
+        recognizer.setRecognitionListener(new Listener(mySession));
 
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
@@ -305,30 +462,34 @@ public class VoiceIME extends InputMethodService {
         paintMic(true);
         startPulse();
         setStatus("Dinliyorum… konuş");
+        setPartial("");
         try {
             recognizer.startListening(intent);
         } catch (Exception e) {
-            stopAll();
-            setStatus("Dinleme başlatılamadı");
+            handleError(5, mySession);
         }
     }
 
     private void destroyRecognizer() {
         if (recognizer != null) {
-            try {
-                recognizer.cancel();
-                recognizer.destroy();
-            } catch (Exception ignored) { }
+            SpeechRecognizer r = recognizer;
             recognizer = null;
+            try {
+                r.setRecognitionListener(null);
+                r.cancel();
+                r.destroy();
+            } catch (Exception ignored) { }
         }
     }
 
     private void stopAll() {
         wanted = false;
         listening = false;
+        session++;
         destroyRecognizer();
         stopPulse();
-        if (micBtn != null) paintMic(false);
+        paintMic(false);
+        setPartial("");
     }
 
     private void startPulse() {
@@ -355,6 +516,10 @@ public class VoiceIME extends InputMethodService {
     }
 
     private class Listener implements RecognitionListener {
+        private final int mySession;
+
+        Listener(int s) { mySession = s; }
+
         @Override public void onReadyForSpeech(Bundle params) { }
         @Override public void onBeginningOfSpeech() { }
         @Override public void onRmsChanged(float rmsdB) { }
@@ -364,19 +529,22 @@ public class VoiceIME extends InputMethodService {
 
         @Override
         public void onPartialResults(Bundle partialResults) {
+            if (mySession != session) return;
             String s = first(partialResults);
-            if (s != null) compose(s);
+            if (s != null) setPartial(s);
         }
 
         @Override
         public void onResults(Bundle results) {
+            if (mySession != session) return;
             String s = first(results);
-            InputConnection ic = getCurrentInputConnection();
-            if (s != null && ic != null) {
-                compose(s);
-                ic.finishComposingText();
-                ic.commitText(" ", 1);
+            if (s != null) {
+                commitFinal(s);
+                rememberGood();
             }
+            lastErr = "-";
+            updateDiag();
+            setPartial("");
             listening = false;
             stopPulse();
             paintMic(false);
@@ -385,7 +553,7 @@ public class VoiceIME extends InputMethodService {
                 // Sürekli yazım: kısa bekleyip tekrar dinle
                 h.postDelayed(new Runnable() {
                     @Override public void run() {
-                        if (wanted && !listening) startRecognizer();
+                        if (wanted && !listening && mySession == session) startRecognizer();
                     }
                 }, 250);
             } else {
@@ -395,40 +563,91 @@ public class VoiceIME extends InputMethodService {
 
         @Override
         public void onError(int error) {
-            listening = false;
-            stopPulse();
-            paintMic(false);
-            InputConnection ic = getCurrentInputConnection();
-            if (ic != null) ic.finishComposingText();
-            destroyRecognizer();
+            handleError(error, mySession);
+        }
+    }
 
-            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && wanted && !busyRetried) {
-                busyRetried = true;
-                h.postDelayed(new Runnable() {
-                    @Override public void run() {
-                        if (wanted && !listening) startRecognizer();
-                    }
-                }, 600);
-                return;
-            }
-            wanted = false;
-            switch (error) {
-                case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
-                case SpeechRecognizer.ERROR_NO_MATCH:
-                    setStatus("Ses duyulmadı. Mikrofona dokunup tekrar konuş");
-                    break;
-                case SpeechRecognizer.ERROR_NETWORK:
-                case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
-                case SpeechRecognizer.ERROR_SERVER:
-                    setStatus("İnternet bağlantısı gerekli");
-                    break;
-                case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
-                    setStatus("Mikrofon izni yok. Sesli Yazı uygulamasını açıp izin ver");
-                    break;
-                default:
-                    setStatus("Bir sorun oldu. Mikrofona dokunup tekrar dene");
-                    break;
-            }
+    private void rememberGood() {
+        if (candIdx < 0 || candIdx >= cands.size()) return;
+        ComponentName c = cands.get(candIdx);
+        SharedPreferences.Editor e = getSharedPreferences("sesli", MODE_PRIVATE).edit();
+        if (c == null) e.remove("good"); else e.putString("good", c.flattenToString());
+        e.apply();
+    }
+
+    private void handleError(int error, int mySession) {
+        if (mySession != session) return;
+        lastErr = errName(error);
+        listening = false;
+        stopPulse();
+        paintMic(false);
+        destroyRecognizer();
+        setPartial("");
+
+        // Tanıyıcı bozuksa sıradakini dene
+        boolean switchable = error == 4 || error == 5 || error == 10 || error == 11
+                || error == 12 || error == 13;
+        if (wanted && switchable && candIdx + 1 < cands.size()) {
+            candIdx++;
+            updateDiag();
+            setStatus("Başka tanıyıcı deneniyor…");
+            h.postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (wanted && !listening) startRecognizer();
+                }
+            }, 200);
+            return;
+        }
+        // Meşgulse bir kez tekrar dene
+        if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && wanted && !busyRetried) {
+            busyRetried = true;
+            h.postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (wanted && !listening) startRecognizer();
+                }
+            }, 600);
+            return;
+        }
+
+        wanted = false;
+        updateDiag();
+        switch (error) {
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+            case SpeechRecognizer.ERROR_NO_MATCH:
+                setStatus("Ses duyulmadı. Mikrofona dokunup tekrar konuş");
+                break;
+            case SpeechRecognizer.ERROR_NETWORK:
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
+                setStatus("İnternet bağlantısı gerekli");
+                break;
+            case SpeechRecognizer.ERROR_AUDIO:
+                setStatus("Mikrofon açılamadı. Başka uygulama kullanıyor olabilir");
+                break;
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                setStatus("Mikrofon izni yok. Sesli Yazı uygulamasını açıp izin ver");
+                break;
+            default:
+                setStatus("Konuşma tanıma çalışmadı. Alttaki hata kodunu bana yaz");
+                break;
+        }
+    }
+
+    private String errName(int e) {
+        switch (e) {
+            case 1: return "1 ağ zaman aşımı";
+            case 2: return "2 ağ";
+            case 3: return "3 ses";
+            case 4: return "4 sunucu";
+            case 5: return "5 istemci";
+            case 6: return "6 ses yok";
+            case 7: return "7 eşleşme yok";
+            case 8: return "8 meşgul";
+            case 9: return "9 izin";
+            case 10: return "10 çok istek";
+            case 11: return "11 sunucu koptu";
+            case 12: return "12 dil desteklenmiyor";
+            case 13: return "13 dil yok";
+            default: return String.valueOf(e);
         }
     }
 
@@ -439,19 +658,41 @@ public class VoiceIME extends InputMethodService {
         return list.get(0);
     }
 
-    /** Söyleneni yazı kutusuna geçici (altı çizili) yazı olarak koyar. */
-    private void compose(String spoken) {
+    // ========================================================== yazı yazma
+
+    /** Kesinleşen cümleyi yazı kutusuna yazar (baş harf ve boşluk ayarıyla). */
+    private void commitFinal(String spoken) {
         InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
+        if (ic == null) {
+            setStatus("Yazı kutusu bulunamadı");
+            return;
+        }
         String sp = spoken.trim();
         if (sp.isEmpty()) return;
-        if (capNext) {
+
+        CharSequence before = ic.getTextBeforeCursor(3, 0);
+        String b = before == null ? "" : before.toString();
+        String t = b.trim();
+        boolean cap = t.isEmpty() || t.endsWith(".") || t.endsWith("?") || t.endsWith("!");
+        if (cap) {
             sp = sp.substring(0, 1).toUpperCase(new Locale("tr", "TR")) + sp.substring(1);
         }
-        ic.setComposingText(prefix + sp, 1);
+        String prefix = (!b.isEmpty() && !Character.isWhitespace(b.charAt(b.length() - 1))) ? " " : "";
+        ic.commitText(prefix + sp + " ", 1);
     }
 
-    private void commit(String s) {
+    /** Noktalama: önceki boşluğu silip işareti yazar. */
+    private void punctuation(String p) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        CharSequence before = ic.getTextBeforeCursor(1, 0);
+        if (before != null && before.length() == 1 && before.charAt(0) == ' ') {
+            ic.deleteSurroundingText(1, 0);
+        }
+        ic.commitText(p + " ", 1);
+    }
+
+    private void commitRaw(String s) {
         InputConnection ic = getCurrentInputConnection();
         if (ic != null) ic.commitText(s, 1);
     }
