@@ -1,0 +1,30 @@
+plugins {
+    id 'com.android.application'
+}
+
+def runNo = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
+android {
+    namespace 'com.elnino.sesliyazi'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.elnino.sesliyazi'
+        minSdk 24
+        targetSdk 34
+        versionCode runNo
+        versionName "v${runNo}"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sesli Yazı</string>
+    <string name="service_desc">Yazı yazılabilen bir kutuya dokununca klavyenin üstünde mikrofon simgesi gösterir. Simgeye basıp konuştuğunuzda söyledikleriniz kutuya yazılır.</string>
+</resources>

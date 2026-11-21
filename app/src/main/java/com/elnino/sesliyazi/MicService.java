@@ -1,0 +1,401 @@
+package com.elnino.sesliyazi;
+
+import android.Manifest;
+import android.accessibilityservice.AccessibilityService;
+import android.animation.ObjectAnimator;
+import android.animation.PropertyValuesHolder;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import android.util.DisplayMetrics;
+import android.view.Gravity;
+import android.view.WindowManager;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.Toast;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Yazı kutusuna dokunup klavye açılınca klavyenin üstünde mikrofon simgesi çıkarır.
+ * Simgeye basınca konuşma dinlenir, söylenenler odaktaki yazı kutusuna yazılır.
+ */
+public class MicService extends AccessibilityService {
+
+    private static final int[] BLUE = {0xFF0A84FF, 0xFF5E5CE6};
+    private static final int[] RED = {0xFFFF453A, 0xFFFF9F0A};
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable updateRun = new Runnable() {
+        @Override public void run() { safeUpdate(); }
+    };
+
+    private WindowManager wm;
+    private WindowManager.LayoutParams lp;
+    private FrameLayout bubble;
+    private ObjectAnimator pulse;
+    private boolean shown = false;
+
+    private boolean listening = false;
+    private SpeechRecognizer recognizer;
+    private AccessibilityNodeInfo target;
+    private String before = "";
+    private String after = "";
+
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        buildBubble();
+    }
+
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        handler.removeCallbacks(updateRun);
+        handler.postDelayed(updateRun, 120);
+    }
+
+    @Override
+    public void onInterrupt() { }
+
+    @Override
+    public boolean onUnbind(Intent intent) {
+        handler.removeCallbacks(updateRun);
+        endListening(true);
+        hide();
+        return super.onUnbind(intent);
+    }
+
+    // ---------------------------------------------------------------- simge
+
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    private void buildBubble() {
+        int size = dp(60);
+        bubble = new FrameLayout(this);
+        paint(false);
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(R.drawable.ic_mic);
+        int pad = dp(15);
+        icon.setPadding(pad, pad, pad, pad);
+        bubble.addView(icon, new FrameLayout.LayoutParams(size, size));
+
+        bubble.setOnClickListener(v -> onBubbleTap());
+
+        lp = new WindowManager.LayoutParams(
+                size, size,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.START;
+    }
+
+    private void paint(boolean active) {
+        GradientDrawable g = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR, active ? RED : BLUE);
+        g.setShape(GradientDrawable.OVAL);
+        g.setStroke(dp(2), 0x55FFFFFF);
+        bubble.setBackground(g);
+    }
+
+    private void show(int keyboardTop) {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int size = dp(60);
+        int margin = dp(12);
+        int x = dm.widthPixels - size - margin;
+        int y = keyboardTop - size - margin;
+        if (y < 0) y = margin;
+        if (!shown) {
+            lp.x = x;
+            lp.y = y;
+            wm.addView(bubble, lp);
+            shown = true;
+        } else if (lp.x != x || lp.y != y) {
+            lp.x = x;
+            lp.y = y;
+            wm.updateViewLayout(bubble, lp);
+        }
+    }
+
+    private void hide() {
+        if (shown) {
+            try { wm.removeView(bubble); } catch (Exception ignored) { }
+            shown = false;
+        }
+    }
+
+    // ------------------------------------------------- klavye / kutu takibi
+
+    private int keyboardTop() {
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows == null) return -1;
+            for (AccessibilityWindowInfo w : windows) {
+                if (w.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                    Rect r = new Rect();
+                    w.getBoundsInScreen(r);
+                    if (r.height() > 0) return r.top;
+                }
+            }
+        } catch (Exception ignored) { }
+        return -1;
+    }
+
+    private AccessibilityNodeInfo findInput() {
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return null;
+            return root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void safeUpdate() {
+        try {
+            update();
+        } catch (Exception ignored) { }
+    }
+
+    private void update() {
+        int kbTop = keyboardTop();
+        if (kbTop < 0) {
+            endListening(true);
+            hide();
+            return;
+        }
+        if (listening) {
+            // Dinlerken simge yerinde kalsın
+            show(kbTop);
+            return;
+        }
+        AccessibilityNodeInfo f = findInput();
+        boolean ok = f != null && f.isEditable() && !f.isPassword();
+        if (ok) {
+            show(kbTop);
+        } else {
+            hide();
+        }
+    }
+
+    // ---------------------------------------------------------- dinleme
+
+    private void onBubbleTap() {
+        if (listening) {
+            if (recognizer != null) {
+                try { recognizer.stopListening(); } catch (Exception ignored) { }
+            }
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            toast("Önce Sesli Yazı uygulamasını aç ve mikrofon iznini ver");
+            Intent i = new Intent(this, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            return;
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            toast("Telefonda konuşma tanıma servisi yok (Google uygulaması gerekli)");
+            return;
+        }
+        startListening();
+    }
+
+    private void startListening() {
+        AccessibilityNodeInfo f = findInput();
+        if (f == null || !f.isEditable()) return;
+        target = f;
+
+        CharSequence t = f.getText();
+        String cur = t == null ? "" : t.toString();
+        if (Build.VERSION.SDK_INT >= 26 && f.isShowingHintText()) cur = "";
+        int s = f.getTextSelectionStart();
+        int e = f.getTextSelectionEnd();
+        if (s < 0 || e < 0) { s = cur.length(); e = cur.length(); }
+        if (s > e) { int x = s; s = e; e = x; }
+        s = Math.min(s, cur.length());
+        e = Math.min(e, cur.length());
+        before = cur.substring(0, s);
+        after = cur.substring(e);
+
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        recognizer.setRecognitionListener(new Listener());
+
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "tr-TR");
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "tr-TR");
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L);
+
+        listening = true;
+        paint(true);
+        startPulse();
+        try {
+            recognizer.startListening(intent);
+        } catch (Exception ex) {
+            endListening(true);
+            toast("Dinleme başlatılamadı");
+        }
+    }
+
+    private void endListening(boolean cancel) {
+        if (recognizer != null) {
+            try {
+                if (cancel) recognizer.cancel();
+                recognizer.destroy();
+            } catch (Exception ignored) { }
+            recognizer = null;
+        }
+        listening = false;
+        stopPulse();
+        if (bubble != null) paint(false);
+    }
+
+    private void startPulse() {
+        stopPulse();
+        pulse = ObjectAnimator.ofPropertyValuesHolder(bubble,
+                PropertyValuesHolder.ofFloat("scaleX", 1f, 1.18f),
+                PropertyValuesHolder.ofFloat("scaleY", 1f, 1.18f));
+        pulse.setDuration(550);
+        pulse.setRepeatCount(ObjectAnimator.INFINITE);
+        pulse.setRepeatMode(ObjectAnimator.REVERSE);
+        pulse.start();
+    }
+
+    private void stopPulse() {
+        if (pulse != null) {
+            pulse.cancel();
+            pulse = null;
+        }
+        if (bubble != null) {
+            bubble.setScaleX(1f);
+            bubble.setScaleY(1f);
+        }
+    }
+
+    private class Listener implements RecognitionListener {
+        @Override public void onReadyForSpeech(Bundle params) { }
+        @Override public void onBeginningOfSpeech() { }
+        @Override public void onRmsChanged(float rmsdB) { }
+        @Override public void onBufferReceived(byte[] buffer) { }
+        @Override public void onEndOfSpeech() { }
+        @Override public void onEvent(int eventType, Bundle params) { }
+
+        @Override
+        public void onPartialResults(Bundle partialResults) {
+            String s = first(partialResults);
+            if (s != null) apply(s, false);
+        }
+
+        @Override
+        public void onResults(Bundle results) {
+            String s = first(results);
+            if (s != null) apply(s, true);
+            endListening(false);
+            handler.postDelayed(updateRun, 150);
+        }
+
+        @Override
+        public void onError(int error) {
+            endListening(true);
+            switch (error) {
+                case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+                case SpeechRecognizer.ERROR_NO_MATCH:
+                    toast("Ses duyulmadı, tekrar dene");
+                    break;
+                case SpeechRecognizer.ERROR_NETWORK:
+                case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
+                case SpeechRecognizer.ERROR_SERVER:
+                    toast("İnternet bağlantısı gerekli");
+                    break;
+                case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                    toast("Mikrofon izni yok. Uygulamayı açıp izin ver");
+                    break;
+                case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+                    toast("Konuşma tanıma meşgul, bir daha dene");
+                    break;
+                default:
+                    break;
+            }
+            handler.postDelayed(updateRun, 150);
+        }
+    }
+
+    private String first(Bundle b) {
+        if (b == null) return null;
+        ArrayList<String> list = b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (list == null || list.isEmpty()) return null;
+        return list.get(0);
+    }
+
+    // ------------------------------------------------------ metni yazma
+
+    private void apply(String spoken, boolean last) {
+        String sp = spoken.trim();
+        if (sp.isEmpty() || target == null) return;
+
+        String bt = before.trim();
+        if (bt.isEmpty() || bt.endsWith(".") || bt.endsWith("?") || bt.endsWith("!")) {
+            sp = sp.substring(0, 1).toUpperCase(new Locale("tr", "TR")) + sp.substring(1);
+        }
+        String sepBefore = (!before.isEmpty()
+                && !Character.isWhitespace(before.charAt(before.length() - 1))) ? " " : "";
+        String sepAfter = (!after.isEmpty()
+                && !Character.isWhitespace(after.charAt(0))) ? " " : "";
+        String head = before + sepBefore + sp;
+        String full = head + sepAfter + after;
+
+        try {
+            target.refresh();
+            Bundle args = new Bundle();
+            args.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, full);
+            boolean ok = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+            if (ok) {
+                Bundle sel = new Bundle();
+                sel.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, head.length());
+                sel.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, head.length());
+                target.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel);
+            } else if (last) {
+                // Bazı kutular doğrudan yazmaya izin vermez: panoya koyup yapıştır
+                ClipboardManager cm =
+                        (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("Sesli Yazı", sepBefore + sp));
+                target.performAction(AccessibilityNodeInfo.ACTION_PASTE);
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private void toast(String msg) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+    }
+}
