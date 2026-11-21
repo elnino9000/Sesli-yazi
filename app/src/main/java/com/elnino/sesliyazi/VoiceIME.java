@@ -99,53 +99,123 @@ public class VoiceIME extends InputMethodService {
         return false;
     }
 
+    private LinearLayout keysBox;
+    private int page = 0;      // 0 harf, 1 sembol
+    private int shift = 0;     // 0 kapalı, 1 tek harf, 2 kilitli
+    private long lastShiftTap = 0;
+
+    private static final String[][] LET = {
+        {"q","w","e","r","t","y","u","\u0131","o","p","\u011f","\u00fc"},
+        {"a","s","d","f","g","h","j","k","l","\u015f","i"},
+        {"z","x","c","v","b","n","m","\u00f6","\u00e7"}};
+    private static final String[][] SYM = {
+        {"1","2","3","4","5","6","7","8","9","0"},
+        {"-","/",":",";","(",")","\u20ba","&","@","\""},
+        {".",",","?","!","'","%","+","="}};
+
     @Override
     public View onCreateInputView() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.parseColor("#0B0B0F"));
-        root.setPadding(dp(10), dp(8), dp(10), dp(8));
+        root.setPadding(dp(4), dp(6), dp(4), dp(4));
 
-        status = label(18, Color.WHITE);
-        status.setText("Konuşmak için mikrofona dokun");
-        root.addView(status, wrapWidth());
+        // Üst çubuk: solda durum/yazı, sağda büyük mikrofon
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(8), 0, dp(4), dp(4));
 
-        partial = label(20, Color.parseColor("#64D2FF"));
-        partial.setMinLines(1);
-        partial.setMaxLines(2);
-        root.addView(partial, wrapWidth());
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        status = label(15, Color.WHITE);
+        status.setGravity(Gravity.START);
+        status.setText("Konuşmak için mikrofona dokun \u2192");
+        texts.addView(status, wrapWidth());
+        partial = label(16, Color.parseColor("#64D2FF"));
+        partial.setGravity(Gravity.START);
+        partial.setMaxLines(1);
+        partial.setEllipsize(android.text.TextUtils.TruncateAt.START);
+        texts.addView(partial, wrapWidth());
+        top.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         micBtn = new FrameLayout(this);
         paintMic(false);
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.drawable.ic_mic);
-        int p = dp(22);
+        int p = dp(12);
         icon.setPadding(p, p, p, p);
-        micBtn.addView(icon, new FrameLayout.LayoutParams(dp(88), dp(88)));
+        micBtn.addView(icon, new FrameLayout.LayoutParams(dp(56), dp(56)));
         micBtn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { onMicTap(); }
         });
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(88), dp(88));
-        mlp.gravity = Gravity.CENTER_HORIZONTAL;
-        mlp.topMargin = dp(4);
-        mlp.bottomMargin = dp(8);
-        root.addView(micBtn, mlp);
+        top.addView(micBtn, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        root.addView(top, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
 
-        // noktalama satırı
-        LinearLayout punct = new LinearLayout(this);
-        punct.setOrientation(LinearLayout.HORIZONTAL);
-        for (final String s : new String[]{".", ",", "?", "!"}) {
-            punct.addView(key(s, 1f, new View.OnClickListener() {
-                @Override public void onClick(View v) { punctuation(s); }
-            }));
+        keysBox = new LinearLayout(this);
+        keysBox.setOrientation(LinearLayout.VERTICAL);
+        root.addView(keysBox, wrapWidth());
+        buildKeys();
+
+        diag = label(11, Color.parseColor("#8E8E93"));
+        root.addView(diag, wrapWidth());
+        updateDiag();
+        return root;
+    }
+
+    private LinearLayout newRow() {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        lp.topMargin = dp(4);
+        keysBox.addView(r, lp);
+        return r;
+    }
+
+    private String cased(String k) {
+        return shift > 0 ? k.toUpperCase(new Locale("tr", "TR")) : k;
+    }
+
+    private void buildKeys() {
+        if (keysBox == null) return;
+        keysBox.removeAllViews();
+        String[][] rows = page == 0 ? LET : SYM;
+
+        for (int i = 0; i < 3; i++) {
+            LinearLayout r = newRow();
+            if (i == 2 && page == 0) {
+                TextView sh = key(shift == 2 ? "\u21ea" : "\u21e7", 1.5f, new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        long now = System.currentTimeMillis();
+                        if (now - lastShiftTap < 400) shift = 2;
+                        else shift = (shift == 0) ? 1 : 0;
+                        lastShiftTap = now;
+                        buildKeys();
+                    }
+                });
+                if (shift > 0) sh.setTextColor(Color.parseColor("#0A84FF"));
+                r.addView(sh);
+            }
+            for (final String k : rows[i]) {
+                final String shown = page == 0 ? cased(k) : k;
+                r.addView(key(shown, 1f, new View.OnClickListener() {
+                    @Override public void onClick(View v) { typeKey(shown); }
+                }));
+            }
+            if (i == 2) {
+                TextView del = key("\u232b", 1.5f, null);
+                del.setOnTouchListener(new RepeatTouch());
+                r.addView(del);
+            }
         }
-        root.addView(punct, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
 
-        // ana tuşlar
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.addView(key("🌐", 1f, new View.OnClickListener() {
+        LinearLayout b = newRow();
+        b.addView(key(page == 0 ? "123" : "ABC", 1.4f, new View.OnClickListener() {
+            @Override public void onClick(View v) { page = 1 - page; buildKeys(); }
+        }));
+        b.addView(key("\uD83C\uDF10", 1f, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 stopAll();
                 InputMethodManager imm =
@@ -153,30 +223,37 @@ public class VoiceIME extends InputMethodService {
                 imm.showInputMethodPicker();
             }
         }));
-        row.addView(key("Boşluk", 2.2f, new View.OnClickListener() {
+        b.addView(key("Bo\u015fluk", 4f, new View.OnClickListener() {
             @Override public void onClick(View v) { commitRaw(" "); }
         }));
-        TextView del = key("⌫", 1f, null);
-        del.setOnTouchListener(new RepeatTouch());
-        row.addView(del);
-        row.addView(key("↵", 1f, new View.OnClickListener() {
+        b.addView(key(".", 1f, new View.OnClickListener() {
+            @Override public void onClick(View v) { typeKey("."); }
+        }));
+        b.addView(key("\u21b5", 1.4f, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 if (!sendDefaultEditorAction(true)) sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
             }
         }));
-        row.addView(key("Bitti", 1.5f, new View.OnClickListener() {
-            @Override public void onClick(View v) { goBack(); }
-        }));
-        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
-        rlp.topMargin = dp(4);
-        root.addView(row, rlp);
+    }
 
-        diag = label(12, Color.parseColor("#AEAEB2"));
-        diag.setPadding(0, dp(4), 0, 0);
-        root.addView(diag, wrapWidth());
-        updateDiag();
-        return root;
+    private void typeKey(String s) {
+        commitRaw(s);
+        if (s.equals(".") || s.equals("?") || s.equals("!")) {
+            if (page == 0 && shift != 2) { shift = 1; buildKeys(); }
+        } else if (shift == 1 && page == 0) {
+            shift = 0;
+            buildKeys();
+        }
+    }
+
+    private void autoShift() {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        CharSequence b = ic.getTextBeforeCursor(3, 0);
+        String t = b == null ? "" : b.toString().trim();
+        boolean cap = t.isEmpty() || t.endsWith(".") || t.endsWith("?") || t.endsWith("!");
+        int ns = cap ? 1 : 0;
+        if (shift != 2 && ns != shift) { shift = ns; buildKeys(); }
     }
 
     private LinearLayout.LayoutParams wrapWidth() {
@@ -197,7 +274,7 @@ public class VoiceIME extends InputMethodService {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextColor(Color.WHITE);
-        t.setTextSize(19);
+        t.setTextSize(21);
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setGravity(Gravity.CENTER);
         GradientDrawable g = new GradientDrawable();
@@ -285,7 +362,7 @@ public class VoiceIME extends InputMethodService {
 
         if (password) {
             stopAll();
-            setStatus("Şifre kutusunda ses kullanılamaz. 🌐 ile klavyeni seç");
+            setStatus("Şifre kutusunda ses kapalı, elle yaz");
             setPartial("");
             return;
         }
@@ -294,9 +371,10 @@ public class VoiceIME extends InputMethodService {
             return;
         }
         if (listening || wanted) return;   // zaten dinliyoruz
-        setStatus("Konuşmak için mikrofona dokun");
+        setStatus("Konuşmak için mikrofona dokun \u2192");
         setPartial("");
-        h.postDelayed(autoStart, 500);
+        page = 0;
+        autoShift();
     }
 
     @Override
