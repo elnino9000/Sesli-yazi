@@ -92,7 +92,19 @@ public class MicService extends AccessibilityService {
                     || t == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
                     || t == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
                 AccessibilityNodeInfo src = event.getSource();
-                if (src != null && src.isEditable()) lastSource = src;
+                if (src != null && src.isEditable()) {
+                    lastSource = src;
+                    lastSrcAt = System.currentTimeMillis();
+                    lastSrcPkg = event.getPackageName() == null ? "" : event.getPackageName().toString();
+                }
+            }
+            if (t == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.getPackageName() != null) {
+                String p = event.getPackageName().toString();
+                String sp = p.replace("com.", "");
+                boolean skip = p.equals(getPackageName()) || p.contains("swiftkey")
+                        || p.contains("inputmethod") || p.contains("keyboard")
+                        || p.contains("systemui") || p.contains("screenshot");
+                if (!skip) fgPkg = sp;
             }
         } catch (Exception ignored) { }
         // Klavye bazen gecikmeli açılır: birkaç kez tekrar kontrol et
@@ -185,6 +197,9 @@ public class MicService extends AccessibilityService {
     private boolean errorShown = false;
     private boolean imeSeen = false;
     private AccessibilityNodeInfo lastSource;
+    private long lastSrcAt = 0;
+    private String lastSrcPkg = "";
+    private String fgPkg = "";
     private String lastPkg = "";
     private String lastToast = "";
     private long lastToastAt = 0;
@@ -339,11 +354,26 @@ public class MicService extends AccessibilityService {
         if (f == null && kb < 0 && !imeSeen) f = scanForEditable();
         boolean editable = f != null && f.isEditable();
 
+        // Olaydan gelen kutu: pencere sorguları işe yaramayan uygulamalar için (örn. WhatsApp Business)
+        String srcShort = lastSrcPkg.replace("com.", "");
+        boolean srcOk = false;
+        if (lastSource != null && System.currentTimeMillis() - lastSrcAt < 45000) {
+            try {
+                srcOk = lastSource.refresh() && lastSource.isEditable() && lastSource.isFocused()
+                        && !lastSource.isPassword()
+                        && (fgPkg.isEmpty() || fgPkg.equals(srcShort));
+            } catch (Exception ignored) { }
+        }
+        boolean queriesWork = activePkg.equals(srcShort);
+        // Pencere sorguları güvenilirse ve klavye kapalıysa olay yolu simgeyi tutmasın
+        if (srcOk && queriesWork && imeSeen && kb < 0) srcOk = false;
+
         // Teşhis kaydı (uygulamadaki Durum kutusunda görünür)
         boolean noise = activePkg.contains("screenshot") || activePkg.contains("systemui");
         String brief = activePkg
                 + " | Klavye " + (kb >= 0 ? "VAR" : kb == -1 ? "YOK" : "?")
                 + " | Kutu " + (f == null ? "YOK" : editable ? "VAR" : "yazılamaz")
+                + " | Olay " + (srcOk ? "VAR" : "YOK") + " " + srcShort + "/" + fgPkg
                 + " | " + windowsSummary()
                 + " | simge " + (shown ? "açık" : "kapalı");
         if (!noise && !brief.equals(lastToast)) {
@@ -359,7 +389,7 @@ public class MicService extends AccessibilityService {
         }
 
         // Klavye görülüyorsa simge çıkar. Telefon klavyeyi hiç bildirmiyorsa, odakta yazı kutusu yeter.
-        boolean visible = kb >= 0 || (!imeSeen && editable);
+        boolean visible = kb >= 0 || (!imeSeen && editable) || srcOk;
         if (!visible) {
             endListening(true);
             hide();
