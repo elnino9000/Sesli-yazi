@@ -483,7 +483,7 @@ public class VoiceIME extends InputMethodService {
                 String w = v[i];
                 if (w.length() <= p.length()) continue;
                 Double cs = ctx.get(w);
-                double s = uniScore(w) * 0.6 + (cs == null ? 0 : cs * 3.0) - w.length() * 0.004;
+                double s = uniScore(w) * 0.2 + (cs == null ? 0 : cs * 12.0) - w.length() * 0.002;
                 rank(out, sc, w, s);
             }
             // sadece senin yazdığın kelimeler
@@ -492,7 +492,7 @@ public class VoiceIME extends InputMethodService {
                 if (w.length() <= p.length() || !w.startsWith(p)) continue;
                 if (words.containsKey(w) && words.get(w) > 0 && lmReady) continue;
                 Double cs = ctx.get(w);
-                double s = uniScore(w) * 0.6 + (cs == null ? 0 : cs * 3.0) - w.length() * 0.004;
+                double s = uniScore(w) * 0.2 + (cs == null ? 0 : cs * 12.0) - w.length() * 0.002;
                 rank(out, sc, w, s);
             }
             boolean capFirst = Character.isUpperCase(cur.charAt(0));

@@ -207,7 +207,7 @@ if len(sys.argv) > 3:
     print("SONRAKİ KELİME ilk3 isabet: %.1f%% (%d/%d)" % (100.0 * h0 / max(1, t0), h0, t0))
     for npfx in (1, 2):
         best = None
-        for wbi, kctx, wuni in itertools.product((0.3, 0.6, 1.0), (1.5, 3.0, 8.0), (0.3, 0.6, 1.2)):
+        for wbi, kctx, wuni in itertools.product((0.3, 0.6), (8.0, 16.0, 32.0, 64.0), (0.05, 0.15, 0.3)):
             h1, t1 = evaluate(wbi, 1.0, kctx, wuni, npfx)
             r = h1 / max(1, t1)
             if best is None or r > best[0]:
