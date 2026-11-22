@@ -305,6 +305,11 @@ public class VoiceIME extends InputMethodService {
                             if (pl.startsWith("real=")) realM = Double.parseDouble(pl.substring(5).trim());
                             if (pl.startsWith("retro=")) retroM = Double.parseDouble(pl.substring(6).trim());
                             if (pl.startsWith("wassoc=")) wAssoc = Double.parseDouble(pl.substring(7).trim());
+                            if (pl.startsWith("tsig=")) tSig = Double.parseDouble(pl.substring(5).trim());
+                            if (pl.startsWith("twp=")) tWp = Double.parseDouble(pl.substring(4).trim());
+                            if (pl.startsWith("tkc=")) tKc = Double.parseDouble(pl.substring(4).trim());
+                            if (pl.startsWith("tmu=")) tMu = Double.parseDouble(pl.substring(4).trim());
+                            if (pl.startsWith("tmk=")) tMk = Double.parseDouble(pl.substring(4).trim());
                             if (pl.startsWith("fzk=")) fzk = Double.parseDouble(pl.substring(4).trim());
                             if (pl.startsWith("fzlim=")) fzlim = Integer.parseInt(pl.substring(6).trim());
                             if (pl.startsWith("fzm=")) fzm = Double.parseDouble(pl.substring(4).trim());
@@ -320,12 +325,12 @@ public class VoiceIME extends InputMethodService {
                     java.util.HashMap<String, java.util.ArrayList<String>> tp =
                             new java.util.HashMap<String, java.util.ArrayList<String>>();
                     for (String x : byCount) {
-                        for (int n = 3; n <= 4; n++) {
+                        for (int n = 1; n <= 4; n++) {
                             if (x.length() < n) continue;
                             String key = x.substring(0, n);
                             java.util.ArrayList<String> l = tp.get(key);
                             if (l == null) { l = new java.util.ArrayList<String>(); tp.put(key, l); }
-                            if (l.size() < 60) l.add(x);
+                            if (l.size() < (n <= 2 ? 120 : 60)) l.add(x);
                         }
                     }
                     java.util.HashMap<String, String[]> tpa = new java.util.HashMap<String, String[]>();
@@ -506,9 +511,16 @@ public class VoiceIME extends InputMethodService {
         trim(own, 8000, 6000);
         trim(pairs, 12000, 9000);
         trim(triples, 15000, 11000);
-        getSharedPreferences("sesli", MODE_PRIVATE).edit()
-                .putString("own", dump(own)).putString("pairs", dump(pairs))
-                .putString("triples", dump(triples)).apply();
+        final java.util.HashMap<String, Integer> o2 = new java.util.HashMap<String, Integer>(own);
+        final java.util.HashMap<String, Integer> p2 = new java.util.HashMap<String, Integer>(pairs);
+        final java.util.HashMap<String, Integer> t2 = new java.util.HashMap<String, Integer>(triples);
+        new Thread(new Runnable() {
+            @Override public void run() {
+                getSharedPreferences("sesli", MODE_PRIVATE).edit()
+                        .putString("own", dump(o2)).putString("pairs", dump(p2))
+                        .putString("triples", dump(t2)).apply();
+            }
+        }).start();
     }
 
     /** İmleçten önceki yazıdan o anki kelimeyi ve önceki iki kelimeyi okur. */
@@ -634,6 +646,226 @@ public class VoiceIME extends InputMethodService {
         }
     }
 
+
+    // ---------------------------------------------------------- dokunma tabanlı çözümleyici
+    // Gboard / SwiftKey ilkesi: her dokunuşun ekrandaki yeri "hangi tuşu kastetti" olasılığına çevrilir;
+    // kelime adayları bu olasılıklar + kelime sıklığı + bağlam ile birlikte puanlanır.
+    private static final String L32 = "qwertyuıopğüasdfghjklşizxcvbnmöç";
+    private volatile double tSig = 0.55, tWp = 1.0, tKc = 12.0, tMu = 4.0, tMk = 8.0;
+    private final java.util.ArrayList<float[]> taps = new java.util.ArrayList<float[]>();
+    private final float[] kcx = new float[32], kcy = new float[32];
+    private float refW = 1f;
+    private boolean centersOk = false;
+    private float tapX, tapY;
+    private boolean tapFresh = false;
+
+    private void ensureCenters() {
+        if (centersOk || letterViews.size() != 32) return;
+        int[] loc = new int[2];
+        for (int i = 0; i < 32; i++) {
+            View v = letterViews.get(i);
+            if (v.getWidth() == 0) return;
+            v.getLocationOnScreen(loc);
+            int idx = L32.indexOf(letterBase.get(i).charAt(0));
+            if (idx < 0) continue;
+            kcx[idx] = loc[0] + v.getWidth() / 2f;
+            kcy[idx] = loc[1] + v.getHeight() / 2f;
+        }
+        refW = Math.max(1, letterViews.get(0).getWidth());
+        centersOk = true;
+    }
+
+    private float[] tapVec(float x, float y) {
+        ensureCenters();
+        if (!centersOk) return null;
+        float[] v = new float[32];
+        double inv = 1.0 / (2 * tSig * tSig * refW * refW);
+        for (int i = 0; i < 32; i++) {
+            float dx = x - kcx[i], dy = y - kcy[i];
+            v[i] = (float) (-(dx * dx + dy * dy) * inv);
+        }
+        return v;
+    }
+
+    private float[] synth(char ch) {
+        float[] v = new float[32];
+        String nb = NB.get(ch);
+        for (int i = 0; i < 32; i++) {
+            char c = L32.charAt(i);
+            v[i] = c == ch ? 0f : (nb != null && nb.indexOf(c) >= 0) ? -1.8f : -7f;
+        }
+        return v;
+    }
+
+    private float[][] tapsFor(String p, boolean strict) {
+        int n = p.length();
+        float[][] r = new float[n][];
+        boolean ok = !strict && taps.size() == n;
+        for (int i = 0; i < n; i++) {
+            float[] v = ok ? taps.get(i) : null;
+            if (strict) {
+                v = new float[32];
+                for (int j = 0; j < 32; j++) v[j] = L32.charAt(j) == p.charAt(i) ? 0f : -9f;
+            } else if (v == null) {
+                v = synth(p.charAt(i));
+            }
+            r[i] = v;
+        }
+        return r;
+    }
+
+    private boolean hasPrefix(String q) {
+        String[] arr = vocab;
+        int lo = 0, hi = arr.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (arr[mid].compareTo(q) < 0) lo = mid + 1; else hi = mid;
+        }
+        return lo < arr.length && arr[lo].startsWith(q);
+    }
+
+    private int[] topLetters(float[] v, int k) {
+        int[] o = new int[k];
+        boolean[] used = new boolean[32];
+        for (int a = 0; a < k; a++) {
+            int bi = 0;
+            float bv = -1e9f;
+            for (int i = 0; i < 32; i++) if (!used[i] && v[i] > bv) { bv = v[i]; bi = i; }
+            used[bi] = true;
+            o[a] = bi;
+        }
+        return o;
+    }
+
+    private double touchOf(String w, float[][] ll, int n) {
+        double s = 0;
+        for (int i = 0; i < n; i++) {
+            int idx = L32.indexOf(w.charAt(i));
+            s += idx < 0 ? -8.0 : ll[i][idx];
+        }
+        return s;
+    }
+
+    private double priorOf(String w) {
+        Integer c = words.get(w);
+        double lc = c == null ? 0 : Math.log(1 + c);
+        Integer o = own.get(w);
+        if (o != null) lc = Math.max(lc, Math.log(1 + o * 2000.0));
+        return lc;
+    }
+
+    private double totalScore(String w, double touch, int n, java.util.HashMap<String, Double> ctx) {
+        Double cx = ctx.get(w);
+        double s = tWp * priorOf(w) + tKc * (cx == null ? 0 : cx) - 0.002 * w.length() + touch;
+        if (w.length() > n) s -= 0.35 * (w.length() - n);
+        if (recent.contains(w)) s += 0.3;
+        return s;
+    }
+
+    private void addCand(java.util.HashMap<String, Object[]> best, String w, double touch, int n,
+                         java.util.HashMap<String, Double> ctx) {
+        double sc = totalScore(w, touch, n, ctx);
+        Object[] o = best.get(w);
+        if (o == null || sc > (Double) o[1]) best.put(w, new Object[]{w, sc, touch});
+    }
+
+    /** Yazılan harflerin dokunma izinden olası kelimeler: {kelime, puan, dokunma puanı}, puana göre sıralı. */
+    private java.util.List<Object[]> decode(String p, java.util.HashMap<String, Double> ctx,
+                                            boolean full, boolean strict) {
+        int n = p.length();
+        java.util.ArrayList<Object[]> res = new java.util.ArrayList<Object[]>();
+        if (!lmReady || n < 1 || n > 24) return res;
+        float[][] ll = tapsFor(p, strict);
+        java.util.HashMap<String, Object[]> best = new java.util.HashMap<String, Object[]>();
+
+        // 1) ızgara araması: her konumda en olası harfler, yalnızca sözlükte öneki olanlar
+        final int W = 60;
+        String[] bp = new String[]{""};
+        double[] bs = new double[]{0};
+        int bn = 1;
+        for (int i = 0; i < n; i++) {
+            int[] ord = topLetters(ll[i], 6);
+            String[] np = new String[bn * 6];
+            double[] ns = new double[bn * 6];
+            int nn = 0;
+            for (int b = 0; b < bn; b++) {
+                for (int k = 0; k < 6; k++) {
+                    int idx = ord[k];
+                    double l = ll[i][idx];
+                    if (l < -7.0) break;
+                    String q = bp[b] + L32.charAt(idx);
+                    if (!hasPrefix(q)) continue;
+                    np[nn] = q;
+                    ns[nn] = bs[b] + l;
+                    nn++;
+                }
+            }
+            if (nn == 0) { bn = 0; break; }
+            final double[] nsf = ns;
+            Integer[] ix = new Integer[nn];
+            for (int j = 0; j < nn; j++) ix[j] = j;
+            java.util.Arrays.sort(ix, new java.util.Comparator<Integer>() {
+                @Override public int compare(Integer a, Integer b) { return Double.compare(nsf[b], nsf[a]); }
+            });
+            int keep = Math.min(W, nn);
+            String[] tp = new String[keep];
+            double[] ts = new double[keep];
+            for (int j = 0; j < keep; j++) { tp[j] = np[ix[j]]; ts[j] = ns[ix[j]]; }
+            bp = tp; bs = ts; bn = keep;
+        }
+        for (int b = 0; b < Math.min(bn, 20); b++) {
+            String P = bp[b];
+            if (P.length() != n) continue;
+            if (words.containsKey(P)) addCand(best, P, bs[b], n, ctx);
+            if (!full) {
+                for (String w : rangeWords(P, 60)) addCand(best, w, bs[b], n, ctx);
+            }
+        }
+
+        // 2) senin kelimelerin ve bağlamın önerdikleri (dokunma olasılığıyla)
+        for (String w : own.keySet()) {
+            int lw = w.length();
+            if (full ? lw != n : lw < n) continue;
+            double t = touchOf(w, ll, n);
+            if (t < -9.0) continue;
+            addCand(best, w, t, n, ctx);
+        }
+        for (String w : ctx.keySet()) {
+            int lw = w.length();
+            if (full ? lw != n : lw < n) continue;
+            if (!isKnown(w)) continue;
+            double t = touchOf(w, ll, n);
+            if (t < -9.0) continue;
+            addCand(best, w, t, n, ctx);
+        }
+
+        // 3) eksik/fazla harf, yer değiştirme ve Türkçe harfsiz yazım
+        if (!strict && n >= 3 && n <= 12) {
+            for (String[] vk : variants(p)) {
+                String k = vk[1];
+                if (k.equals("sub")) continue;
+                if (!full && k.equals("ins")) continue;
+                String v = vk[0];
+                if (v.length() < 3) continue;
+                double cost = k.equals("tr") ? 1.8 : k.equals("dia") ? 0.4 * Integer.parseInt(vk[2]) : 2.5;
+                if (full) {
+                    if (words.containsKey(v)) addCand(best, v, -cost, v.length(), ctx);
+                } else {
+                    for (String w : rangeWords(v, 12)) addCand(best, w, -cost, v.length(), ctx);
+                }
+            }
+        }
+
+        res.addAll(best.values());
+        java.util.Collections.sort(res, new java.util.Comparator<Object[]>() {
+            @Override public int compare(Object[] a, Object[] b) {
+                return Double.compare((Double) b[1], (Double) a[1]);
+            }
+        });
+        while (res.size() > 14) res.remove(res.size() - 1);
+        return res;
+    }
+
     private double uniScore(String w) {
         Integer c = words.get(w);
         double s = c == null ? 0 : Math.log(1 + c) / uniLog;
@@ -705,39 +937,22 @@ public class VoiceIME extends InputMethodService {
             }
         } else {
             String p = cur.toString().toLowerCase(TR);
-            java.util.HashMap<String, Double> best = new java.util.HashMap<String, Double>();
-            boolean prefixHit = false;
-            if (words.containsKey(p) || own.containsKey(p)) { consider(best, p, 0.0, ctx); prefixHit = true; }
-            for (String w : rangeWords(p, 100000)) {
-                prefixHit = true;
-                if (w.length() > p.length()) consider(best, w, 0.0, ctx);
-            }
-            // sadece senin yazdığın kelimeler
-            for (java.util.Map.Entry<String, Integer> e : own.entrySet()) {
-                String w = e.getKey();
-                if (w.length() > p.length() && w.startsWith(p)) { consider(best, w, 0.0, ctx); prefixHit = true; }
-            }
-            // yanlış basılmış harfleri düzelt (yan tuşlar, yer değiştirme, eksik/fazla harf)
-            if (p.length() >= 3 && !noFix) {
-                for (String[] vk : variants(p)) {
-                    String v = vk[0];
-                    if (v.length() < 3) continue;
-                    double cost = costOf(vk);
-                    for (String w : rangeWords(v, 120)) consider(best, w, cost, ctx);
-                }
-            }
-            // çok harfi yanlış basılmışsa (hiçbir kelime bu önekle başlamıyorsa) bulanık eşleştir
-            if (p.length() >= 4 && !noFix && lmReady) {
-                for (Object[] f : fuzzyRank(p, ctx, true)) {
-                    consider(best, (String) f[0], ((Integer) f[2]) / 100.0 * fzk, ctx);
-                }
-            }
-            for (java.util.Map.Entry<String, Double> e : best.entrySet())
-                rank(out, sc, e.getKey(), e.getValue());
+            java.util.Arrays.fill(sc, -1e18);
+            for (Object[] r : decode(p, ctx, false, noFix)) rank(out, sc, (String) r[0], (Double) r[1]);
             boolean capFirst = Character.isUpperCase(cur.charAt(0));
-            for (int i = 0; i < SN; i++) {
-                if (out[i].length() > 0 && capFirst)
-                    out[i] = out[i].substring(0, 1).toUpperCase(TR) + out[i].substring(1);
+            if (capFirst) {
+                for (int i = 0; i < SN; i++) {
+                    if (out[i].length() > 0) out[i] = out[i].substring(0, 1).toUpperCase(TR) + out[i].substring(1);
+                }
+            }
+            // yazdığın hali de üçüncü sırada dursun (isimler, argo vb. için)
+            String lit = cur.toString();
+            boolean has = false;
+            for (int i = 0; i < SN; i++) if (out[i].equalsIgnoreCase(lit)) { has = true; break; }
+            if (!has && lit.length() >= 2) {
+                int at = 2;
+                for (int i = SN - 1; i > at; i--) out[i] = out[i - 1];
+                out[at] = lit;
             }
             if (out[0].length() == 0) out[0] = cur.toString();
         }
@@ -761,7 +976,7 @@ public class VoiceIME extends InputMethodService {
     /** Önekle başlayan kelimeler (sık kelime listesi veya sıralı sözlükte tarama). */
     private java.util.List<String> rangeWords(String v, int cap) {
         java.util.ArrayList<String> res = new java.util.ArrayList<String>();
-        if (v.length() == 3 || v.length() == 4) {
+        if (v.length() >= 1 && v.length() <= 4) {
             String[] t = topPrefix.get(v);
             if (t != null && cap <= 120) {
                 for (String x : t) res.add(x);
@@ -882,26 +1097,22 @@ public class VoiceIME extends InputMethodService {
         return new Object[]{bw, known ? Double.valueOf(bs - st) : Double.valueOf(99.0)};
     }
 
-    /** Boşluğa basılınca o anki kelime için düzeltme: bilinmeyen kelime veya bağlama uymayan kelime. */
+    /** Boşluğa basılınca o anki kelime için düzeltme: dokunma izi + sıklık + bağlam. */
     private String fixCurrent() {
         if (noFix || !lmReady || cur.length() < 3) return null;
         String p = cur.toString().toLowerCase(TR);
         java.util.HashMap<String, Double> ctx = contextFor(prev2, prev);
-        Object[] r = bestFix(p, ctx, null);
-        if (r == null) {
-            if (p.length() < 4 || isKnown(p)) return null;
-            java.util.List<Object[]> fr = fuzzyRank(p, ctx);
-            if (fr.isEmpty()) return null;
-            double s1 = (Double) fr.get(0)[1];
-            double s2 = fr.size() > 1 ? (Double) fr.get(1)[1] : -99;
-            return (s1 - s2 >= fzm) ? (String) fr.get(0)[0] : null;
-        }
-        String w = (String) r[0];
-        double d = (Double) r[1];
-        if (!isKnown(p)) return w;
-        Double cw = ctx.get(w);
-        if (d > realM && cw != null && cw > 0) return w;
-        return null;
+        java.util.List<Object[]> r = decode(p, ctx, true, false);
+        if (r.isEmpty()) return null;
+        String w = (String) r.get(0)[0];
+        if (w.equals(p)) return null;
+        double s1 = (Double) r.get(0)[1], t1 = (Double) r.get(0)[2];
+        if (t1 < -6.0) return null;
+        float[][] ll = tapsFor(p, false);
+        double lit = touchOf(p, ll, p.length());
+        boolean known = isKnown(p);
+        double sl = known ? totalScore(p, lit, p.length(), ctx) : lit;
+        return (s1 - sl >= (known ? tMk : tMu)) ? w : null;
     }
 
 
@@ -1263,6 +1474,31 @@ public class VoiceIME extends InputMethodService {
         }, true));
     }
 
+
+    /** Klavyelerdeki gibi düz çizgili gülen yüz simgesi (renkli emoji değil). */
+    private static class SmileyDrawable extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint pt = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        @Override public void draw(android.graphics.Canvas c) {
+            android.graphics.Rect b = getBounds();
+            float cx = b.exactCenterX(), cy = b.exactCenterY();
+            float r = Math.min(b.width(), b.height()) * 0.30f;
+            pt.setColor(Color.WHITE);
+            pt.setStyle(android.graphics.Paint.Style.STROKE);
+            pt.setStrokeWidth(r * 0.14f);
+            pt.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            c.drawCircle(cx, cy, r, pt);
+            c.drawArc(new android.graphics.RectF(cx - r * 0.55f, cy - r * 0.45f, cx + r * 0.55f, cy + r * 0.55f),
+                    25, 130, false, pt);
+            pt.setStyle(android.graphics.Paint.Style.FILL);
+            c.drawCircle(cx - r * 0.36f, cy - r * 0.28f, r * 0.11f, pt);
+            c.drawCircle(cx + r * 0.36f, cy - r * 0.28f, r * 0.11f, pt);
+        }
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter f) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
     /** Dokunma anında çalışan tuş: hızlı ve kaçırmaz (aralarda ölü boşluk yok). */
     private TextView mkKey(String text, float weight, boolean func, final Runnable action,
                            final boolean repeat) {
@@ -1289,6 +1525,9 @@ public class VoiceIME extends InputMethodService {
                 switch (e.getAction()) {
                     case MotionEvent.ACTION_DOWN:
                         g.setColor(KEY_DOWN);
+                        tapX = e.getRawX();
+                        tapY = e.getRawY();
+                        tapFresh = true;
                         action.run();
                         if (repeat) h.postDelayed(rep, 380);
                         return true;
@@ -1331,6 +1570,7 @@ public class VoiceIME extends InputMethodService {
     private void buildKeys() {
         if (keysBox == null) return;
         keysBox.removeAllViews();
+        centersOk = false;
         letterViews.clear();
         letterBase.clear();
         shiftKey = null;
@@ -1373,21 +1613,12 @@ public class VoiceIME extends InputMethodService {
         b.addView(mkKey(page == 0 ? "123" : "ABC", 1.4f, true, new Runnable() {
             @Override public void run() { page = 1 - page; buildKeys(); }
         }, false));
-        b.addView(mkKey("🌐", 1.1f, true, new Runnable() {
-            @Override public void run() {
-                stopAll();
-                InputMethodManager imm =
-                        (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-                imm.showInputMethodPicker();
-            }
-        }, false));
-        b.addView(mkKey("😀", 1.1f, true, new Runnable() {
+        TextView emo = mkKey("", 1.3f, true, new Runnable() {
             @Override public void run() { page = 2; buildKeys(); }
-        }, false));
-        b.addView(mkKey(",", 1f, false, new Runnable() {
-            @Override public void run() { typeKey(","); }
-        }, false));
-        b.addView(mkKey("Türkçe", 3f, false, new Runnable() {
+        }, false);
+        emo.setForeground(new SmileyDrawable());
+        b.addView(emo);
+        b.addView(mkKey("Lidya", 5f, false, new Runnable() {
             @Override public void run() { doSpace(); }
         }, false));
         b.addView(mkKey(".", 1f, false, new Runnable() {
@@ -1419,6 +1650,8 @@ public class VoiceIME extends InputMethodService {
         autoRestore = null;
         autoLearn = null;
         autoDel = 0;
+        boolean fresh = tapFresh;
+        tapFresh = false;
         ic.commitText(s, 1);
         leaveStatus();
         boolean letter = Character.isLetter(s.charAt(0));
@@ -1434,6 +1667,8 @@ public class VoiceIME extends InputMethodService {
             return;
         }
         if (letter) {
+            if (cur.length() == 0) taps.clear();
+            taps.add(fresh ? tapVec(tapX, tapY) : null);
             cur.append(s);
             if (shift == 1) { shift = 0; refreshLabels(); }
         } else {
@@ -1530,7 +1765,10 @@ public class VoiceIME extends InputMethodService {
             updateSuggestions();
             return;
         }
-        if (cur.length() > 0) cur.setLength(cur.length() - 1);
+        if (cur.length() > 0) {
+            cur.setLength(cur.length() - 1);
+            if (!taps.isEmpty()) taps.remove(taps.size() - 1);
+        }
         sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL);
         updateSuggestions();
     }
@@ -1747,7 +1985,7 @@ public class VoiceIME extends InputMethodService {
                 != PackageManager.PERMISSION_GRANTED) {
             lastErr = "mikrofon izni yok";
             updateDiag();
-            setStatus("Mikrofon izni yok. Sesli Yazı uygulamasını açıp izin ver");
+            setStatus("Mikrofon izni yok. Lidya Klavye uygulamasını açıp izin ver");
             return;
         }
         buildCandidates();
@@ -2093,7 +2331,7 @@ public class VoiceIME extends InputMethodService {
                 setStatus("Mikrofon açılamadı. Başka uygulama kullanıyor olabilir");
                 break;
             case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
-                setStatus("Mikrofon izni yok. Sesli Yazı uygulamasını açıp izin ver");
+                setStatus("Mikrofon izni yok. Lidya Klavye uygulamasını açıp izin ver");
                 break;
             default:
                 setStatus("Konuşma tanıma çalışmadı (hata: " + lastErr + ")");

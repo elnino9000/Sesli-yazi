@@ -612,147 +612,129 @@ if len(sys.argv) > 3:
     for w, t, r, sent in FAILS[:60]:
         print("  %s | %s -> %s | %s" % (w, t, r, sent[:90]))
 
-    # ------------------------------------------------------------ ağır yazım hatası (6-7 harf yanlış)
-    DIAP = {'c': 'ç', 'g': 'ğ', 'i': 'ı', 'o': 'ö', 's': 'ş', 'u': 'ü'}
-    POS = {}
-    for _ri, _row in enumerate(ROWS):
-        for _ci, _ch in enumerate(_row):
-            POS[_ch] = (_ci + (0.0, 0.5, 1.0)[_ri], _ri)
-    VOW = "aeıioöuü"
-    def kdist(a, b):
-        if a not in POS or b not in POS:
-            return 99.0
-        return math.hypot(POS[a][0] - POS[b][0], POS[a][1] - POS[b][1])
-    def sub_cost(a, b):
-        if a == b:
-            return 0
-        if b in NB.get(a, ()):
-            return 40
-        if DIAP.get(a) == b or DIAP.get(b) == a:
-            return 15
-        if a in VOW and b in VOW:
-            return 65
-        if kdist(a, b) <= 2.3:
-            return 70
-        return 100
-    def wdist(t, w, limit):
-        n, m = len(t), len(w)
-        prev2 = None
-        prev = [j * 70 for j in range(m + 1)]
-        for i in range(1, n + 1):
-            cur = [i * 70] + [0] * m
-            rowmin = cur[0]
-            ti = t[i - 1]
-            for j in range(1, m + 1):
-                c = prev[j - 1] + sub_cost(ti, w[j - 1])
-                d = prev[j] + 70
-                if d < c: c = d
-                d = cur[j - 1] + 70
-                if d < c: c = d
-                if i > 1 and j > 1 and ti == w[j - 2] and t[i - 2] == w[j - 1]:
-                    d = prev2[j - 2] + 60
-                    if d < c: c = d
-                cur[j] = c
-                if c < rowmin: rowmin = c
-            if rowmin > limit:
-                return 10 ** 6
-            prev2, prev = prev, cur
-        return prev[m]
+    # ------------------------------------------------------------ dokunma modeli (Gboard / SwiftKey ilkesi)
+    # Her dokunuşun ekrandaki yeri, "hangi tuşu kastetti" olasılığına çevrilir; kelime adayları
+    # bu olasılıkların çarpımı + kelime sıklığı + bağlam ile puanlanır.
+    L32 = "qwertyuıopğüasdfghjklşizxcvbnmöç"
+    KCP = {}
+    for i, ch in enumerate(L32[:12]):
+        KCP[ch] = (i + 0.5, 0.0)
+    for i, ch in enumerate(L32[12:23]):
+        KCP[ch] = ((i + 0.5) * 12.0 / 11.0, 1.7)
+    for i, ch in enumerate(L32[23:]):
+        KCP[ch] = (1.5 + i + 0.5, 3.4)
 
-    def garble(w, rnd, q):
-        out_c = []
-        for ch in w:
-            r = rnd.random()
-            if r < q * 0.5 and ch in NB:
-                out_c.append(rnd.choice(sorted(NB[ch])))
-            elif r < q * 0.65 and ch in POS:
-                near = [x for x in POS if x != ch and kdist(ch, x) <= 2.3]
-                out_c.append(rnd.choice(sorted(near)) if near else ch)
-            elif r < q * 0.75 and ch in VOW:
-                out_c.append(rnd.choice("aeıioöuü"))
-            elif r < q:
-                out_c.append(rnd.choice(LETTERS))
-            elif r < q + 0.04:
-                continue
-            else:
-                out_c.append(ch)
-        return "".join(out_c)
+    def tap_vec(tx, ty, sm):
+        return {ch: -((tx - x) ** 2 + (ty - y) ** 2) / (2 * sm * sm) for ch, (x, y) in KCP.items()}
 
-    pool = sorted(allw, key=lambda x: -uni_c[x])[:30000]
-    rnd2 = random.Random(11)
-    HW = []
-    for ws in TESTS[:6000]:
-        if None in ws or len(ws) < 3 or len(ws) > 12:
+    def has_prefix(q):
+        j = bisect.bisect_left(allw, q)
+        return j < len(allw) and allw[j].startswith(q)
+
+    def beam(lls, W=60):
+        bm = [("", 0.0)]
+        for ll in lls:
+            order = sorted(ll.items(), key=lambda x: -x[1])[:6]
+            new = []
+            for pp, sc_ in bm:
+                for ch, l in order:
+                    if l < -7.0:
+                        break
+                    q = pp + ch
+                    if has_prefix(q):
+                        new.append((q, sc_ + l))
+            new.sort(key=lambda x: -x[1])
+            bm = new[:W]
+        return bm
+
+    rndt = random.Random(21)
+    SAMP = []
+    for ws in TESTS[:9000]:
+        if None in ws or len(ws) < 3:
             continue
-        i = rnd2.randrange(1, len(ws))
-        if len(ws[i]) < 4 or len(ws[i]) > 12:
+        i = rndt.randrange(1, len(ws))
+        w = ws[i]
+        if len(w) < 4 or len(w) > 11 or any(ch not in KCP for ch in w):
             continue
-        g = garble(ws[i], rnd2, 0.5)
-        if g == ws[i] or len(g) < 3:
-            continue
-        HW.append((ws[:i], ws[i], g))
-        if len(HW) >= 250:
+        SAMP.append((["^"] + ws[:i], w))
+        if len(SAMP) >= 350:
             break
-    print("ağır hatalı örnek:", len(HW))
-    DATA = []
-    for hist, w, g in HW:
-        acc = ctx_list((["^"] + hist)[-3:])
-        accn = {}
-        cl = len(g)
-        c0 = g[0]
-        okf = set([c0]) | set(NB.get(c0, ())) | set([DIAP.get(c0, c0)])
-        dl = []
-        for x in pool:
-            if abs(len(x) - cl) > 3 or x[0] not in okf:
-                continue
-            d = wdist(g, x, 65 * cl)
-            if d < 10 ** 6:
-                dl.append((x, d))
-        for x in acc:
-            if x in uni_c and x not in dict(dl):
-                d = wdist(g, x, 80 * cl)
-                if d < 10 ** 6:
-                    dl.append((x, d))
-        DATA.append((w, g, acc, dl))
-    def fz_eval(FK, LIM, use_ctx, margin, KC=12.0):
-        t1 = t3 = acc_n = acc_ok = 0
-        for w, g, acc, dl in DATA:
-            cl = len(g)
-            sc = []
-            for x, d in dl:
-                cx = acc.get(x, 0) if use_ctx else 0
-                if d > LIM * cl and cx <= 0:
-                    continue
-                sc.append((WUNI * math.log(1 + uni_c[x]) / ulog + KC * cx - 0.002 * len(x) - d / 100.0 * FK, x))
-            sc.sort(reverse=True)
-            top = [x for _, x in sc[:3]]
-            t1 += bool(top) and top[0] == w
-            t3 += w in top
-            if len(sc) >= 1:
-                gap = sc[0][0] - (sc[1][0] if len(sc) > 1 else -99)
-                if gap >= margin:
-                    acc_n += 1
-                    acc_ok += sc[0][1] == w
-        n = max(1, len(DATA))
-        return 100.0 * t1 / n, 100.0 * t3 / n, 100.0 * acc_n / n, 100.0 * acc_ok / max(1, acc_n)
-    bestf = None
-    for FK in (3.5, 6.0, 10.0):
-        for KC in (6.0, 12.0, 24.0, 48.0):
-            r = fz_eval(FK, 60, True, 99, KC)
-            print("  AĞIR HATA FK=%.1f KC=%.0f -> ilk1 %.1f%%  ilk3 %.1f%%" % (FK, KC, r[0], r[1]))
-            if bestf is None or r[1] + r[0] > bestf[0]:
-                bestf = (r[0] + r[1], FK, KC)
-    _, FKb, KCb = bestf
-    LIMb = 60
-    fzm = 99.0
-    for mg in (0.0, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0):
-        r = fz_eval(FKb, LIMb, True, mg, KCb)
-        print("  OTOMATİK DÜZELTME marj=%.1f: kapsam %.1f%% doğruluk %.1f%%" % (mg, r[2], r[3]))
-        if r[3] >= 85 and fzm == 99.0:
-            fzm = mg
-    print("AĞIR HATA SEÇİLEN: FK=%.1f KC=%.0f marj=%.1f" % (FKb, KCb, fzm))
+    print("dokunma örneği:", len(SAMP))
+    TAPS = []
+    for st in (0.45, 0.7):
+        for hist, w in SAMP:
+            TAPS.append((st, hist, w, [(KCP[ch][0] + rndt.gauss(0, st), KCP[ch][1] + rndt.gauss(0, st)) for ch in w]))
+
+    def decode_rows(sm):
+        rows = []
+        for st, hist, w, taps in TAPS:
+            lls = [tap_vec(x, y, sm) for x, y in taps]
+            lit = "".join(max(ll.items(), key=lambda x: x[1])[0] for ll in lls)
+            litll = sum(max(ll.values()) for ll in lls)
+            acc = ctx_list(hist[-3:])
+            cands = [(P, sc_) for P, sc_ in beam(lls)[:25] if P in uni_c]
+            rows.append((st, w, lit, litll, acc, cands))
+        return rows
+
+    def rank_row(row, wp, kc):
+        st, w, lit, litll, acc, cands = row
+        sc = [(wp * math.log(1 + uni_c[P]) + kc * acc.get(P, 0) - 0.002 * len(P) + t, P, t) for P, t in cands]
+        sc.sort(reverse=True)
+        return sc
+
+    best_t = None
+    for sm in (0.4, 0.55, 0.7):
+        rows = decode_rows(sm)
+        for wp in (0.5, 1.0, 2.0):
+            for kc in (8.0, 16.0):
+                tot = {0.45: [0, 0, 0, 0], 0.7: [0, 0, 0, 0]}
+                for row in rows:
+                    sc = rank_row(row, wp, kc)
+                    top = [x[1] for x in sc]
+                    t = tot[row[0]]
+                    t[3] += 1
+                    t[0] += bool(top) and top[0] == row[1]
+                    t[1] += row[1] in top[:3]
+                    t[2] += row[1] in top[:10]
+                score = sum(100.0 * (t[0] + t[1]) / max(1, t[3]) for t in tot.values())
+                print("  DOKUNMA sm=%.2f wp=%.1f kc=%.0f -> normal: ilk1 %.1f%% ilk3 %.1f%% | titrek: ilk1 %.1f%% ilk3 %.1f%%" % (
+                    sm, wp, kc, 100.0 * tot[0.45][0] / max(1, tot[0.45][3]), 100.0 * tot[0.45][1] / max(1, tot[0.45][3]),
+                    100.0 * tot[0.7][0] / max(1, tot[0.7][3]), 100.0 * tot[0.7][1] / max(1, tot[0.7][3])))
+                if best_t is None or score > best_t[0]:
+                    best_t = (score, sm, wp, kc)
+    _, TSM, TWP, TKC = best_t
+    rows = decode_rows(TSM)
+    clean_n = clean_bad = 0
+    gaps = []   # (gap, is_unknown_literal, correct, is_clean)
+    for row in rows:
+        st, w, lit, litll, acc, cands = row
+        sc = rank_row(row, TWP, TKC)
+        if not sc:
+            continue
+        s1, w1, t1 = sc[0]
+        known = lit in uni_c
+        sl = (TWP * math.log(1 + uni_c[lit]) + TKC * acc.get(lit, 0) - 0.002 * len(lit) + litll) if known else litll
+        if w1 == lit:
+            gaps.append((-99.0, known, w1 == w, lit == w))
+        else:
+            gaps.append((s1 - sl if t1 >= -6.0 else -99.0, known, w1 == w, lit == w))
+    TMU, TMK = 99.0, 99.0
+    for mg in (0, 1, 2, 3, 4, 6, 8, 12, 16):
+        unk = [g for g in gaps if (not g[1]) and g[0] >= mg]
+        unk_all = [g for g in gaps if not g[1]]
+        kn_clean = [g for g in gaps if g[1] and g[3]]
+        kn_clean_bad = [g for g in kn_clean if g[0] >= mg and not g[2]]
+        pu = 100.0 * sum(1 for g in unk if g[2]) / max(1, len(unk))
+        cov = 100.0 * len(unk) / max(1, len(unk_all))
+        pb = 100.0 * len(kn_clean_bad) / max(1, len(kn_clean))
+        print("  OTOMATİK DÜZELTME marj=%d: bilinmeyen kelimede kapsam %.1f%% doğruluk %.1f%% | doğru yazılan kelimeyi bozma %.2f%%" % (mg, cov, pu, pb))
+        if TMU == 99.0 and pu >= 92.0 and len(unk) > 5:
+            TMU = float(mg)
+        if TMK == 99.0 and pb <= 0.5:
+            TMK = float(mg)
+    print("DOKUNMA SEÇİLEN: sigma=%.2f prior=%.1f ctx=%.0f marj_bilinmeyen=%.0f marj_bilinen=%.0f" % (TSM, TWP, TKC, TMU, TMK))
     with open(os.path.join(out, "params.txt"), "w") as f:
         f.write("pen=%.3f\ndia=%.3f\nreal=%.3f\nretro=%.3f\n" % (P['pen'], P['dia'], P['m_real'], min(P['m_retro'], 99.0)))
         f.write("wbi=%.3f\nwfour=%.3f\nwskip=%.3f\n" % (WT['bi'], WT['four'], WT['skip']))
         f.write("wassoc=%.4f\n" % WT.get('assoc', 0.0))
-        f.write("fzk=%.3f\nfzlim=%d\nfzm=%.3f\nfzc=%.3f\n" % (FKb, LIMb, fzm, KCb))
+        f.write("tsig=%.3f\ntwp=%.3f\ntkc=%.3f\ntmu=%.3f\ntmk=%.3f\n" % (TSM, TWP, TKC, TMU, TMK))

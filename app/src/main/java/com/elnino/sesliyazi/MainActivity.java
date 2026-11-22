@@ -42,10 +42,10 @@ public class MainActivity extends Activity {
         root.setPadding(pad, dp(56), pad, pad);
         scroll.addView(root);
 
-        root.addView(text("Sesli Yazı", 34, Color.WHITE));
+        root.addView(text("Lidya Klavye", 34, Color.WHITE));
 
-        TextView sub = text("Sesli Klavye: açılınca kendiliğinden dinler, söylediğini yazar. "
-                + "Her uygulamada çalışır.", 18, Color.parseColor("#EBEBF5"));
+        TextView sub = text("Türkçe akıllı klavye: yazdıklarını anlar, yanlış basılan harflerden doğru kelimeyi bulur, "
+                + "mikrofonla da yazar. Her uygulamada çalışır.", 18, Color.parseColor("#EBEBF5"));
         sub.setPadding(0, dp(8), 0, dp(20));
         root.addView(sub);
 
@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
                         startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS));
                     }
                 }));
-        TextView n1 = text("Açılan listede \"Sesli Klavye\"nin düğmesini aç. "
+        TextView n1 = text("Açılan listede \"Lidya Klavye\"nin düğmesini aç. "
                 + "Uyarı çıkarsa Tamam de.", 16, Color.parseColor("#EBEBF5"));
         n1.setPadding(dp(4), dp(10), dp(4), dp(10));
         root.addView(n1);
@@ -84,8 +84,8 @@ public class MainActivity extends Activity {
         ((LinearLayout.LayoutParams) c3.getLayoutParams()).topMargin = dp(16);
         root.addView(c3);
 
-        TextView n3 = text("Yazarken klavyedeki 🌐 tuşuna bas ve Sesli Klavye'yi seç. "
-                + "Mikrofon kendiliğinden dinlemeye başlar. Bitince \"Bitti\" tuşu eski klavyene döndürür.",
+        TextView n3 = text("Yazarken ekranın altında çıkan klavye simgesine bas ve Lidya Klavye'yi seç. "
+                + "Klavyenin üstündeki mikrofona basınca konuşarak yazarsın.",
                 16, Color.parseColor("#EBEBF5"));
         n3.setPadding(dp(4), dp(10), dp(4), dp(10));
         root.addView(n3);
@@ -105,7 +105,7 @@ public class MainActivity extends Activity {
         ((LinearLayout.LayoutParams) c4.getLayoutParams()).topMargin = dp(16);
         root.addView(c4);
         TextView n4 = text("WhatsApp'ta bir sohbeti aç → ⋮ → Diğer → Sohbeti dışa aktar → Medyasız. "
-                + "Sonra paylaşım listesinden Sesli Yazı'yı seç. Kelimelerini ve cümle kalıplarını öğrenir, "
+                + "Sonra paylaşım listesinden Lidya Klavye'yi seç. Kelimelerini ve cümle kalıplarını öğrenir, "
                 + "öneriler sana göre olur. Dosya telefondan çıkmaz.",
                 16, Color.parseColor("#EBEBF5"));
         n4.setPadding(dp(4), dp(10), dp(4), dp(10));
