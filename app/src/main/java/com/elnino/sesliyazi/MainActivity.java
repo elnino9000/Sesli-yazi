@@ -90,6 +90,27 @@ public class MainActivity extends Activity {
         n3.setPadding(dp(4), dp(10), dp(4), dp(10));
         root.addView(n3);
 
+        TextView learnStatus = text("Klavye seni daha iyi tanır", 18, Color.parseColor("#64D2FF"));
+        LinearLayout c4 = card("4. Yazışmalarımdan öğren", learnStatus,
+                "Sohbet dosyası seç", new int[]{0xFFBF5AF2, 0xFF5E5CE6},
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                        i.addCategory(Intent.CATEGORY_OPENABLE);
+                        i.setType("*/*");
+                        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"text/plain", "application/zip"});
+                        startActivityForResult(i, 7);
+                    }
+                });
+        ((LinearLayout.LayoutParams) c4.getLayoutParams()).topMargin = dp(16);
+        root.addView(c4);
+        TextView n4 = text("WhatsApp'ta bir sohbeti aç → ⋮ → Diğer → Sohbeti dışa aktar → Medyasız. "
+                + "Sonra paylaşım listesinden Sesli Yazı'yı seç. Kelimelerini ve cümle kalıplarını öğrenir, "
+                + "öneriler sana göre olur. Dosya telefondan çıkmaz.",
+                16, Color.parseColor("#EBEBF5"));
+        n4.setPadding(dp(4), dp(10), dp(4), dp(10));
+        root.addView(n4);
+
         TextView testTitle = text("Dene", 22, Color.WHITE);
         testTitle.setPadding(0, dp(16), 0, dp(8));
         root.addView(testTitle);
@@ -116,6 +137,18 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refresh();
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == 7 && res == RESULT_OK && data != null && data.getData() != null) {
+            Intent i = new Intent("com.elnino.sesliyazi.IMPORT");
+            i.setClass(this, ShareActivity.class);
+            i.setData(data.getData());
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(i);
+        }
     }
 
     @Override

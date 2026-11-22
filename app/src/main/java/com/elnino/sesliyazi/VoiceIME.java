@@ -461,7 +461,23 @@ public class VoiceIME extends InputMethodService {
         return a.toString();
     }
 
+    private long lastImport = 0;
+
+    /** Başka ekranda (Importer) yeni şey öğrenildiyse bellektekini ona göre yenile. */
+    private boolean importChanged() {
+        long t = getSharedPreferences("sesli", MODE_PRIVATE).getLong("imported_at", 0);
+        if (t != lastImport) {
+            lastImport = t;
+            return true;
+        }
+        return false;
+    }
+
     private void saveWords() {
+        if (importChanged()) {
+            loadPersonal();
+            return;
+        }
         trim(own, 8000, 6000);
         trim(pairs, 12000, 9000);
         trim(triples, 15000, 11000);
@@ -1274,6 +1290,7 @@ public class VoiceIME extends InputMethodService {
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         h.removeCallbacks(autoStart);
+        if (importChanged()) loadPersonal();
 
         int cls = info.inputType & InputType.TYPE_MASK_CLASS;
         int var = info.inputType & InputType.TYPE_MASK_VARIATION;

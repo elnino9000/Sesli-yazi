@@ -9,6 +9,56 @@ tmp = os.environ.get("TMPDIR", "/tmp")
 def norm(s):
     return s.replace('İ', 'i').replace('I', 'ı').lower()
 
+
+# ---- klavye komşulukları ve düzeltme biçimleri (hem temizlikte hem ölçümde kullanılır)
+import itertools
+ROWS = ["qwertyuıopğü", "asdfghjklşi", "zxcvbnmöç"]
+NB = {}
+def _addnb(a, b):
+    NB.setdefault(a, set()).add(b); NB.setdefault(b, set()).add(a)
+for _r in ROWS:
+    for _i in range(len(_r) - 1):
+        _addnb(_r[_i], _r[_i + 1])
+for _u, _l in ((ROWS[0], ROWS[1]), (ROWS[1], ROWS[2])):
+    for _j in range(len(_l)):
+        for _jj in (_j, _j + 1):
+            if _jj < len(_u):
+                _addnb(_l[_j], _u[_jj])
+LETTERS = "abcçdefgğhıijklmnoöprsştuüvyz"
+DIA = {'c': 'ç', 'g': 'ğ', 'i': 'ı', 'o': 'ö', 's': 'ş', 'u': 'ü'}
+
+def dia_combos(p):
+    pos = [i for i, ch in enumerate(p) if ch in DIA]
+    res = []
+    if len(pos) > 6:
+        return res
+    for r in range(1, len(pos) + 1):
+        for sub in itertools.combinations(pos, r):
+            lst = list(p)
+            for i in sub:
+                lst[i] = DIA[lst[i]]
+            res.append(("".join(lst), r))
+    return res
+
+def variants(p):
+    n = len(p)
+    res = []
+    for i in range(n):
+        for ch in NB.get(p[i], ()):
+            res.append((p[:i] + ch + p[i + 1:], 'sub'))
+    for i in range(n - 1):
+        if p[i] != p[i + 1]:
+            res.append((p[:i] + p[i + 1] + p[i] + p[i + 2:], 'tr'))
+    if n >= 4:
+        for i in range(n):
+            res.append((p[:i] + p[i + 1:], 'del'))
+    for i in range(n + 1):
+        for ch in LETTERS:
+            res.append((p[:i] + ch + p[i:], 'ins'))
+    return res
+
+NORM = {}   # hatalı yazım -> doğru yazım (derlemeden öğrenilir)
+
 TOK = re.compile(r"[a-zçğıöşüâîû]+")
 SPLIT = re.compile(r"[.?!…;:]+")
 APOS = re.compile(r"\s*['’`´]\s*")
@@ -18,6 +68,8 @@ def segments(line):
     for seg in SPLIT.split(line):
         ws = TOK.findall(seg)
         if ws:
+            if NORM:
+                ws = [NORM.get(w, w) for w in ws]
             yield ws
 
 # ---- 1. geçiş: kelime sıklıkları
@@ -33,9 +85,54 @@ print("satır:", nlines, "farklı kelime:", len(uni), "toplam:", sum(uni.values(
 def ok(w):
     return len(w) >= 2 or w == 'o'
 
-vocab_list = [(w, c) for w, c in uni.items() if c >= 3 and ok(w)]
+# ---- derlem temizliği: altyazılardaki harfsiz yazımları ve yazım hatalarını doğrusuna bağla
+def resolve(w):
+    for _ in range(4):
+        n = NORM.get(w)
+        if n is None or n == w:
+            return w
+        w = n
+    return w
+
+asc = 0
+for w, c in list(uni.items()):
+    best = None
+    for v, n in dia_combos(w):
+        cv = uni.get(v, 0)
+        if cv >= 20 and cv >= 4 * c and (best is None or cv > best[1]):
+            best = (v, cv)
+    if best:
+        NORM[w] = best[0]
+        asc += 1
+print("harfsiz yazımdan doğrusuna bağlanan:", asc)
+
+typo = 0
+examples = []
+for w, c in list(uni.items()):
+    if c < 3 or c > 3000 or w in NORM or len(w) < 3:
+        continue
+    best = None
+    for v, kind in variants(w):
+        cv = uni.get(v, 0)
+        if cv >= 100 and cv >= 25 * c and (best is None or cv > best[1]):
+            best = (v, cv)
+    if best:
+        NORM[w] = best[0]
+        typo += 1
+        if len(examples) < 25 and c > 20:
+            examples.append("%s>%s" % (w, best[0]))
+print("yazım hatası olarak bağlanan:", typo, " örnek:", " ".join(examples))
+
+uni2 = collections.Counter()
+for w, c in uni.items():
+    uni2[resolve(w)] += c
+uni = uni2
+for w in list(NORM):
+    NORM[w] = resolve(w)
+
+vocab_list = [(w, c) for w, c in uni.items() if c >= 5 and ok(w)]
 vocab_list.sort(key=lambda x: -x[1])
-vocab_all = [(w, c) for w, c in vocab_list if c >= 4][:250000]
+vocab_all = vocab_list[:250000]
 vocab_list = vocab_list[:100000]
 vocab = set(w for w, _ in vocab_list)
 with open(os.path.join(out, "words_tr.txt"), "w", encoding="utf-8") as f:
@@ -63,9 +160,6 @@ with open(corpus, encoding='utf-8', errors='ignore') as f, \
                     fb.write("%s\t%s\n" % (a, b))
                     if i >= 2 and toks[i - 2] is not None:
                         ft.write("%s %s\t%s\n" % (toks[i - 2], a, b))
-                        fs.write("%s\t%s\n" % (toks[i - 2], b))
-                        if i >= 3 and toks[i - 3] is not None:
-                            f4.write("%s %s %s\t%s\n" % (toks[i - 3], toks[i - 2], a, b))
 
 def counted(path):
     cmd = "LC_ALL=C sort -S 2G -T %s %s | uniq -c" % (tmp, path)
@@ -112,8 +206,6 @@ def build(path, name, minc, topk, minTotal, maxCtx):
 
 build(bi_path, "lm_bi.txt", 2, 8, 5, 60000)
 build(tri_path, "lm_tri.txt", 2, 5, 4, 140000)
-build(four_path, "lm_four.txt", 2, 4, 4, 120000)
-build(skip_path, "lm_skip.txt", 3, 5, 8, 40000)
 
 # ---------------------------------------------------------------- ölçüm ve ayar
 # Eğitimde kullanılmayan cümlelerde (1) sonraki kelime, (2) yanlış basılan harflerden
@@ -143,8 +235,8 @@ if len(sys.argv) > 3:
 
     bi = load_lm("lm_bi.txt")
     tri = load_lm("lm_tri.txt")
-    four = load_lm("lm_four.txt")
-    skip = load_lm("lm_skip.txt")
+    four = {}
+    skip = {}
 
     # Türkçe Q klavye komşulukları (Java ile aynı)
     ROWS = ["qwertyuıopğü", "asdfghjklşi", "zxcvbnmöç"]
@@ -271,8 +363,8 @@ if len(sys.argv) > 3:
 
     bestw = None
     for wb in (0.3, 0.6):
-        for w4 in (0.0, 0.5, 1.0, 2.0):
-            for wsk in (0.0, 0.15, 0.4):
+        for w4 in (0.0,):
+            for wsk in (0.0,):
                 WT.update({'bi': wb, 'tri': 1.0, 'four': w4, 'skip': wsk})
                 r, n = nw_eval(3000)
                 print("  sonraki kelime bi=%.2f dörtlü=%.1f atlamalı=%.2f -> %.1f%% (%d)" % (wb, w4, wsk, r, n))
@@ -439,7 +531,7 @@ if len(sys.argv) > 3:
                 for mt in (0.4, 0.8, 1.6, 1e9):
                     P = {'pen': pen, 'dia': dia, 'm_real': mr, 'm_retro': mt}
                     ok, bad, nc, ncl, nwh = run(P, True, mt < 1e8)
-                    score = ok - 8.0 * bad
+                    score = ok - 30.0 * bad
                     print("  pen=%.2f dia=%.2f gerçek=%.1f geri=%s -> düzelt %.1f%%  bozma %.2f%%" % (pen, dia, mr, ("%.1f" % mt) if mt < 1e8 else "kapalı", ok, bad))
                     if best is None or score > best[0]:
                         best = (score, P, ok, bad)
