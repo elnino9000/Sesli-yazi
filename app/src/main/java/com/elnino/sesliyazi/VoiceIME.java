@@ -1030,6 +1030,35 @@ public class VoiceIME extends InputMethodService {
             }
         }
 
+        // 3b) iki hatalı kelime (örn. eksik harf + yanlış tuş): önce bir düzenleme, sonra bir komşu/yer değiştirme/silme
+        if (full && !strict && n >= 5 && n <= 14) {
+            for (String[] v1 : variants(p)) {
+                String k1 = v1[1];
+                if (k1.equals("sub")) continue;
+                double c1 = k1.equals("tr") ? 1.8 : k1.equals("dia") ? 0.4 * Integer.parseInt(v1[2]) : 2.5;
+                String a = v1[0];
+                int m = a.length();
+                if (m < 4) continue;
+                for (int i = 0; i < m; i++) {
+                    String nb = NB.get(a.charAt(i));
+                    if (nb != null) {
+                        for (int k = 0; k < nb.length(); k++) {
+                            String v = a.substring(0, i) + nb.charAt(k) + a.substring(i + 1);
+                            if (words.containsKey(v)) addCand(best, v, -(c1 + 2.4 + 1.0), v.length(), ctx);
+                        }
+                    }
+                    if (m >= 5) {
+                        String v = a.substring(0, i) + a.substring(i + 1);
+                        if (words.containsKey(v)) addCand(best, v, -(c1 + 2.5 + 1.0), v.length(), ctx);
+                    }
+                    if (i + 1 < m && a.charAt(i) != a.charAt(i + 1)) {
+                        String v = a.substring(0, i) + a.charAt(i + 1) + a.charAt(i) + a.substring(i + 2);
+                        if (words.containsKey(v)) addCand(best, v, -(c1 + 1.8 + 1.0), v.length(), ctx);
+                    }
+                }
+            }
+        }
+
         res.addAll(best.values());
         java.util.Collections.sort(res, new java.util.Comparator<Object[]>() {
             @Override public int compare(Object[] a, Object[] b) {
