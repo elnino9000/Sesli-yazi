@@ -126,8 +126,8 @@ public class VoiceIME extends InputMethodService {
         {"z","x","c","v","b","n","m","ö","ç"}};
     private static final String[][] SYM = {
         {"1","2","3","4","5","6","7","8","9","0"},
-        {"-","/",":",";","(",")","₺","&","@","\""},
-        {".",",","?","!","'","%","+","="}};
+        {"-","/",":",";","(",")","₺","$","€","£"},
+        {".",",","?","!","'","\"","%","+","&","@"}};
 
     // --- öneri sistemi: yerleşik kelimeler + senin yazdıkların
     private static final String BUILTIN =
@@ -1785,6 +1785,21 @@ public class VoiceIME extends InputMethodService {
             col.addView(row, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
         }
+        final float[] dn = new float[2];
+        sv.setOnTouchListener(new View.OnTouchListener() {
+            @Override public boolean onTouch(View v, MotionEvent ev) {
+                int a = ev.getActionMasked();
+                if (a == MotionEvent.ACTION_DOWN) { dn[0] = ev.getX(); dn[1] = ev.getY(); }
+                else if (a == MotionEvent.ACTION_UP) {
+                    float dx = ev.getX() - dn[0], dy = ev.getY() - dn[1];
+                    if (Math.abs(dx) > dp(70) && Math.abs(dx) > 2 * Math.abs(dy)) {
+                        int nc = emoCat + (dx < 0 ? 1 : -1);
+                        if (nc >= 0 && nc < EMO_TAB.length) { emoCat = nc; buildKeys(); }
+                    }
+                }
+                return false;
+            }
+        });
         keysBox.addView(sv, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(196)));
 
