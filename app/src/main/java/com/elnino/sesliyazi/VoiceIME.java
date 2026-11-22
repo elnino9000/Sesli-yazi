@@ -159,6 +159,11 @@ public class VoiceIME extends InputMethodService {
     private volatile double pen = 0.5;
     private boolean noFix = false;
     private volatile double diaPen = 0.03, realM = 0.8, retroM = 0.8;
+    // ağır yazım hatası (çok harf yanlış) için bulanık eşleştirme
+    private volatile double fzk = 2.0, fzm = 1.0;
+    private volatile int fzlim = 60;
+    private volatile String[] freqWords = new String[0];
+    private final int[] dA = new int[48], dB = new int[48], dC = new int[48];
     private int autoDel = 0;
     private boolean afterApos = false;
     private String autoRestore = null, autoLearn = null;
@@ -293,6 +298,9 @@ public class VoiceIME extends InputMethodService {
                             if (pl.startsWith("dia=")) diaPen = Double.parseDouble(pl.substring(4).trim());
                             if (pl.startsWith("real=")) realM = Double.parseDouble(pl.substring(5).trim());
                             if (pl.startsWith("retro=")) retroM = Double.parseDouble(pl.substring(6).trim());
+                            if (pl.startsWith("fzk=")) fzk = Double.parseDouble(pl.substring(4).trim());
+                            if (pl.startsWith("fzlim=")) fzlim = Integer.parseInt(pl.substring(6).trim());
+                            if (pl.startsWith("fzm=")) fzm = Double.parseDouble(pl.substring(4).trim());
                         }
                         pr.close();
                     } catch (Exception ignored) { }
@@ -316,6 +324,11 @@ public class VoiceIME extends InputMethodService {
                     for (java.util.Map.Entry<String, java.util.ArrayList<String>> e : tp.entrySet())
                         tpa.put(e.getKey(), e.getValue().toArray(new String[0]));
                     topPrefix = tpa;
+                    java.util.ArrayList<String> fl = new java.util.ArrayList<String>();
+                    for (String x : byCount) {
+                        if (x.length() >= 3 && fl.size() < 80000) fl.add(x);
+                    }
+                    freqWords = fl.toArray(new String[0]);
                     String[] v = w.keySet().toArray(new String[0]);
                     java.util.Arrays.sort(v);
                     int mx = 1;
@@ -621,14 +634,16 @@ public class VoiceIME extends InputMethodService {
         } else {
             String p = cur.toString().toLowerCase(TR);
             java.util.HashMap<String, Double> best = new java.util.HashMap<String, Double>();
-            if (words.containsKey(p) || own.containsKey(p)) consider(best, p, 0.0, ctx);
+            boolean prefixHit = false;
+            if (words.containsKey(p) || own.containsKey(p)) { consider(best, p, 0.0, ctx); prefixHit = true; }
             for (String w : rangeWords(p, 100000)) {
+                prefixHit = true;
                 if (w.length() > p.length()) consider(best, w, 0.0, ctx);
             }
             // sadece senin yazdığın kelimeler
             for (java.util.Map.Entry<String, Integer> e : own.entrySet()) {
                 String w = e.getKey();
-                if (w.length() > p.length() && w.startsWith(p)) consider(best, w, 0.0, ctx);
+                if (w.length() > p.length() && w.startsWith(p)) { consider(best, w, 0.0, ctx); prefixHit = true; }
             }
             // yanlış basılmış harfleri düzelt (yan tuşlar, yer değiştirme, eksik/fazla harf)
             if (p.length() >= 3 && !noFix) {
@@ -637,6 +652,12 @@ public class VoiceIME extends InputMethodService {
                     if (v.length() < 3) continue;
                     double cost = costOf(vk);
                     for (String w : rangeWords(v, 120)) consider(best, w, cost, ctx);
+                }
+            }
+            // çok harfi yanlış basılmışsa (hiçbir kelime bu önekle başlamıyorsa) bulanık eşleştir
+            if (!prefixHit && p.length() >= 4 && !noFix) {
+                for (Object[] f : fuzzyRank(p, ctx)) {
+                    consider(best, (String) f[0], ((Integer) f[2]) / 100.0 * fzk, ctx);
                 }
             }
             for (java.util.Map.Entry<String, Double> e : best.entrySet())
@@ -792,13 +813,111 @@ public class VoiceIME extends InputMethodService {
         String p = cur.toString().toLowerCase(TR);
         java.util.HashMap<String, Double> ctx = contextFor(prev2, prev);
         Object[] r = bestFix(p, ctx, null);
-        if (r == null) return null;
+        if (r == null) {
+            if (p.length() < 4 || isKnown(p)) return null;
+            java.util.List<Object[]> fr = fuzzyRank(p, ctx);
+            if (fr.isEmpty()) return null;
+            double s1 = (Double) fr.get(0)[1];
+            double s2 = fr.size() > 1 ? (Double) fr.get(1)[1] : -99;
+            return (s1 - s2 >= fzm) ? (String) fr.get(0)[0] : null;
+        }
         String w = (String) r[0];
         double d = (Double) r[1];
         if (!isKnown(p)) return w;
         Double cw = ctx.get(w);
         if (d > realM && cw != null && cw > 0) return w;
         return null;
+    }
+
+
+    // ---------------------------------------------------------- ağır hata: bulanık eşleştirme
+
+    private int subCost(char a, char b) {
+        if (a == b) return 0;
+        String nb = NB.get(a);
+        if (nb != null && nb.indexOf(b) >= 0) return 40;
+        Character da = DIA.get(a);
+        if (da != null && da == b) return 15;
+        da = DIA.get(b);
+        if (da != null && da == a) return 15;
+        return 100;
+    }
+
+    /** Klavye komşuluğuna duyarlı düzenleme uzaklığı (yer değiştirme dahil); 100 = bir harf. */
+    private int wdist(String t, String w, int limit) {
+        int n = t.length(), m = w.length();
+        if (m > 40 || n > 40) return 1000000;
+        int[] p2 = dA, p1 = dB, cu = dC;
+        for (int j = 0; j <= m; j++) p1[j] = j * 70;
+        for (int i = 1; i <= n; i++) {
+            cu[0] = i * 70;
+            int rm = cu[0];
+            char ti = t.charAt(i - 1);
+            for (int j = 1; j <= m; j++) {
+                int c = p1[j - 1] + subCost(ti, w.charAt(j - 1));
+                int d = p1[j] + 70;
+                if (d < c) c = d;
+                d = cu[j - 1] + 70;
+                if (d < c) c = d;
+                if (i > 1 && j > 1 && ti == w.charAt(j - 2) && t.charAt(i - 2) == w.charAt(j - 1)) {
+                    d = p2[j - 2] + 60;
+                    if (d < c) c = d;
+                }
+                cu[j] = c;
+                if (c < rm) rm = c;
+            }
+            if (rm > limit) return 1000000;
+            int[] tmp = p2; p2 = p1; p1 = cu; cu = tmp;
+        }
+        return p1[m];
+    }
+
+    /** Çok harfi yanlış kelime için en iyi adaylar: {kelime, puan, uzaklık}, puanı büyükten küçüğe. */
+    private java.util.List<Object[]> fuzzyRank(String g, java.util.HashMap<String, Double> ctx) {
+        java.util.ArrayList<Object[]> top = new java.util.ArrayList<Object[]>();
+        int cl = g.length();
+        if (!lmReady || cl < 4 || cl > 14) return top;
+        char c0 = g.charAt(0);
+        String nb = NB.get(c0);
+        Character dc = DIA.get(c0);
+        java.util.HashSet<String> seen = new java.util.HashSet<String>();
+        for (int pass = 0; pass < 3; pass++) {
+            java.util.Collection<String> src;
+            if (pass == 0) src = java.util.Arrays.asList(freqWords);
+            else if (pass == 1) src = own.keySet();
+            else src = ctx.keySet();
+            for (String x : src) {
+                int lx = x.length();
+                if (lx < 3) continue;
+                if (pass == 2) {
+                    if (Math.abs(lx - cl) > 4 || !isKnown(x)) continue;
+                } else {
+                    if (Math.abs(lx - cl) > 3) continue;
+                    char f = x.charAt(0);
+                    boolean okf = f == c0 || (nb != null && nb.indexOf(f) >= 0) || (dc != null && dc == f);
+                    if (!okf) {
+                        Character df = DIA.get(f);
+                        okf = df != null && df == c0;
+                    }
+                    if (!okf) continue;
+                }
+                if (pass > 0 && !seen.add(x)) continue;
+                if (pass == 0) seen.add(x);
+                int d = wdist(g, x, (pass == 2 ? 80 : 65) * cl);
+                if (d >= 1000000) continue;
+                Double cx = ctx.get(x);
+                double c = cx == null ? 0 : cx;
+                if (d > fzlim * cl && c <= 0) continue;
+                double sc = uniScore(x) * 0.2 + 12.0 * c - x.length() * 0.002 - d / 100.0 * fzk;
+                int pos = top.size();
+                while (pos > 0 && (Double) top.get(pos - 1)[1] < sc) pos--;
+                if (pos < 5) {
+                    top.add(pos, new Object[]{x, sc, d});
+                    if (top.size() > 5) top.remove(5);
+                }
+            }
+        }
+        return top;
     }
 
     private void rank(String[] out, double[] sc, String w, double s) {

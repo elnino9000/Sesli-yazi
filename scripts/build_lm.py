@@ -541,6 +541,129 @@ if len(sys.argv) > 3:
     print("--- KALAN HATALAR (doğru, yazılan, çıkan | cümle) ---")
     for w, t, r, sent in FAILS[:60]:
         print("  %s | %s -> %s | %s" % (w, t, r, sent[:90]))
+
+    # ------------------------------------------------------------ ağır yazım hatası (6-7 harf yanlış)
+    DIAP = {'c': 'ç', 'g': 'ğ', 'i': 'ı', 'o': 'ö', 's': 'ş', 'u': 'ü'}
+    def sub_cost(a, b):
+        if a == b:
+            return 0
+        if b in NB.get(a, ()):
+            return 40
+        if DIAP.get(a) == b or DIAP.get(b) == a:
+            return 15
+        return 100
+    def wdist(t, w, limit):
+        n, m = len(t), len(w)
+        prev2 = None
+        prev = [j * 70 for j in range(m + 1)]
+        for i in range(1, n + 1):
+            cur = [i * 70] + [0] * m
+            rowmin = cur[0]
+            ti = t[i - 1]
+            for j in range(1, m + 1):
+                c = prev[j - 1] + sub_cost(ti, w[j - 1])
+                d = prev[j] + 70
+                if d < c: c = d
+                d = cur[j - 1] + 70
+                if d < c: c = d
+                if i > 1 and j > 1 and ti == w[j - 2] and t[i - 2] == w[j - 1]:
+                    d = prev2[j - 2] + 60
+                    if d < c: c = d
+                cur[j] = c
+                if c < rowmin: rowmin = c
+            if rowmin > limit:
+                return 10 ** 6
+            prev2, prev = prev, cur
+        return prev[m]
+
+    def garble(w, rnd, q):
+        out_c = []
+        for ch in w:
+            r = rnd.random()
+            if r < q * 0.7 and ch in NB:
+                out_c.append(rnd.choice(sorted(NB[ch])))
+            elif r < q:
+                out_c.append(rnd.choice(LETTERS))
+            elif r < q + 0.04:
+                continue
+            else:
+                out_c.append(ch)
+        return "".join(out_c)
+
+    pool = sorted(allw, key=lambda x: -uni_c[x])[:30000]
+    rnd2 = random.Random(11)
+    HW = []
+    for ws in TESTS[:6000]:
+        if None in ws or len(ws) < 3 or len(ws) > 12:
+            continue
+        i = rnd2.randrange(1, len(ws))
+        if len(ws[i]) < 4 or len(ws[i]) > 12:
+            continue
+        g = garble(ws[i], rnd2, 0.5)
+        if g == ws[i] or len(g) < 3:
+            continue
+        HW.append((ws[:i], ws[i], g))
+        if len(HW) >= 250:
+            break
+    print("ağır hatalı örnek:", len(HW))
+    DATA = []
+    for hist, w, g in HW:
+        acc = ctx_list((["^"] + hist)[-3:])
+        accn = {}
+        cl = len(g)
+        c0 = g[0]
+        okf = set([c0]) | set(NB.get(c0, ())) | set([DIAP.get(c0, c0)])
+        dl = []
+        for x in pool:
+            if abs(len(x) - cl) > 3 or x[0] not in okf:
+                continue
+            d = wdist(g, x, 65 * cl)
+            if d < 10 ** 6:
+                dl.append((x, d))
+        for x in acc:
+            if x in uni_c and x not in dict(dl):
+                d = wdist(g, x, 80 * cl)
+                if d < 10 ** 6:
+                    dl.append((x, d))
+        DATA.append((w, g, acc, dl))
+    def fz_eval(FK, LIM, use_ctx, margin):
+        t1 = t3 = acc_n = acc_ok = 0
+        for w, g, acc, dl in DATA:
+            cl = len(g)
+            sc = []
+            for x, d in dl:
+                cx = acc.get(x, 0) if use_ctx else 0
+                if d > LIM * cl and cx <= 0:
+                    continue
+                sc.append((WUNI * math.log(1 + uni_c[x]) / ulog + KCTX * cx - 0.002 * len(x) - d / 100.0 * FK, x))
+            sc.sort(reverse=True)
+            top = [x for _, x in sc[:3]]
+            t1 += bool(top) and top[0] == w
+            t3 += w in top
+            if len(sc) >= 1:
+                gap = sc[0][0] - (sc[1][0] if len(sc) > 1 else -99)
+                if gap >= margin:
+                    acc_n += 1
+                    acc_ok += sc[0][1] == w
+        n = max(1, len(DATA))
+        return 100.0 * t1 / n, 100.0 * t3 / n, 100.0 * acc_n / n, 100.0 * acc_ok / max(1, acc_n)
+    bestf = None
+    for FK in (1.0, 2.0, 3.5):
+        for LIM in (45, 60):
+            for uc in (False, True):
+                r = fz_eval(FK, LIM, uc, 99)
+                print("  AĞIR HATA FK=%.1f LIM=%d bağlam=%s -> ilk1 %.1f%%  ilk3 %.1f%%" % (FK, LIM, uc, r[0], r[1]))
+                if uc and (bestf is None or r[1] + r[0] > bestf[0]):
+                    bestf = (r[0] + r[1], FK, LIM)
+    _, FKb, LIMb = bestf
+    fzm = 99.0
+    for mg in (0.0, 0.5, 1.0, 2.0, 3.0, 5.0):
+        r = fz_eval(FKb, LIMb, True, mg)
+        print("  OTOMATİK DÜZELTME marj=%.1f: kapsam %.1f%% doğruluk %.1f%%" % (mg, r[2], r[3]))
+        if r[3] >= 85 and fzm == 99.0:
+            fzm = mg
+    print("AĞIR HATA SEÇİLEN: FK=%.1f LIM=%d marj=%.1f" % (FKb, LIMb, fzm))
     with open(os.path.join(out, "params.txt"), "w") as f:
         f.write("pen=%.3f\ndia=%.3f\nreal=%.3f\nretro=%.3f\n" % (P['pen'], P['dia'], P['m_real'], min(P['m_retro'], 99.0)))
         f.write("wbi=%.3f\nwfour=%.3f\nwskip=%.3f\n" % (WT['bi'], WT['four'], WT['skip']))
+        f.write("fzk=%.3f\nfzlim=%d\nfzm=%.3f\n" % (FKb, LIMb, fzm))
