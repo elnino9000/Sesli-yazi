@@ -145,11 +145,29 @@ bi_path = os.path.join(tmp, "bi.txt")
 tri_path = os.path.join(tmp, "tri.txt")
 four_path = os.path.join(tmp, "four.txt")
 skip_path = os.path.join(tmp, "skip.txt")
+import math as _m
+assoc_path = os.path.join(tmp, "assoc.txt")
+avocab = set(w for w, _ in vocab_list[80:20080])
+acnt = collections.Counter()
 with open(corpus, encoding='utf-8', errors='ignore') as f, \
         open(bi_path, "w", encoding="utf-8") as fb, open(tri_path, "w", encoding="utf-8") as ft, \
-        open(four_path, "w", encoding="utf-8") as f4, open(skip_path, "w", encoding="utf-8") as fs:
-    for line in f:
+        open(four_path, "w", encoding="utf-8") as f4, open(skip_path, "w", encoding="utf-8") as fs, \
+        open(assoc_path, "w", encoding="utf-8") as fa:
+    for li, line in enumerate(f):
         for ws in segments(line):
+            if li % 4 == 0 and len(ws) >= 2:
+                for i in range(len(ws)):
+                    a = ws[i]
+                    if a not in avocab:
+                        continue
+                    acnt[a] += 1
+                    for j in range(i + 1, min(len(ws), i + 6)):
+                        b = ws[j]
+                        if b in avocab and b != a:
+                            if a < b:
+                                fa.write("%s\t%s\n" % (a, b))
+                            else:
+                                fa.write("%s\t%s\n" % (b, a))
             toks = ["^"] + [w if w in vocab else None for w in ws]
             for i in range(1, len(toks)):
                 b = toks[i]
@@ -204,6 +222,27 @@ def build(path, name, minc, topk, minTotal, maxCtx):
             f.write(line + "\n")
     print(name, "bağlam:", len(rows))
 
+def build_assoc():
+    T = float(sum(acnt.values()))
+    lists = {}
+    for a, b, c in counted(assoc_path):
+        if c < 6:
+            continue
+        pmi = _m.log(c * T / (acnt[a] * acnt[b] * 5.0))
+        if pmi < 1.0:
+            continue
+        sc = pmi * min(1.0, (c / 30.0) ** 0.5)
+        lists.setdefault(a, []).append((b, sc))
+        lists.setdefault(b, []).append((a, sc))
+    rows = 0
+    with open(os.path.join(out, "lm_assoc.txt"), "w", encoding="utf-8") as f:
+        for w, l in lists.items():
+            l.sort(key=lambda x: -x[1])
+            f.write("%s\t%s\n" % (w, ",".join("%s:%d" % (x, int(sc * 10)) for x, sc in l[:12])))
+            rows += 1
+    print("anlam ilişkisi kelimesi:", rows)
+
+build_assoc()
 build(bi_path, "lm_bi.txt", 2, 8, 5, 60000)
 build(tri_path, "lm_tri.txt", 2, 5, 4, 140000)
 
@@ -237,6 +276,19 @@ if len(sys.argv) > 3:
     tri = load_lm("lm_tri.txt")
     four = {}
     skip = {}
+    assoc = load_lm("lm_assoc.txt")
+
+    def add_assoc(acc, hist_words, wa):
+        if not wa:
+            return
+        k = 0
+        for h in reversed(hist_words[-8:]):
+            e = assoc.get(h)
+            if e:
+                d = 0.85 ** k
+                for w, sc10 in e[0]:
+                    acc[w] = acc.get(w, 0) + wa * sc10 / 10.0 * d
+            k += 1
 
     # Türkçe Q klavye komşulukları (Java ile aynı)
     ROWS = ["qwertyuıopğü", "asdfghjklşi", "zxcvbnmöç"]
@@ -356,6 +408,7 @@ if len(sys.argv) > 3:
                 if toks[i] is None or any(t is None for t in toks[max(0, i - 3):i]):
                     continue
                 acc = ctx_list(toks[max(0, i - 3):i])
+                add_assoc(acc, [t for t in toks[1:i] if t], WT.get('assoc', 0.0))
                 top = [w for w, _ in sorted(acc.items(), key=lambda x: -x[1])[:3]]
                 tot += 1
                 hit += toks[i] in top
@@ -373,6 +426,17 @@ if len(sys.argv) > 3:
     WT.update({'bi': bestw[1], 'tri': 1.0, 'four': bestw[2], 'skip': bestw[3]})
     r, n = nw_eval(6000)
     print("SONRAKİ KELİME ilk3 isabet (en iyi bi=%.2f dörtlü=%.1f atlamalı=%.2f): %.1f%% (%d)" % (bestw[1], bestw[2], bestw[3], r, n))
+
+    besta = None
+    for wa in (0.0, 0.003, 0.006, 0.012, 0.025, 0.05):
+        WT['assoc'] = wa
+        r, n = nw_eval(3000)
+        print("  anlam ilişkisi ağırlığı %.3f -> sonraki kelime %.1f%%" % (wa, r))
+        if besta is None or r > besta[0]:
+            besta = (r, wa)
+    WT['assoc'] = besta[1]
+    r, n = nw_eval(6000)
+    print("ANLAM İLİŞKİSİ SEÇİLEN: ağırlık %.3f -> sonraki kelime ilk3 %.1f%%" % (besta[1], r))
 
     # ---- (2) gerçek yazım hatası düzeltme hattı: bilinmeyen kelime, bağlama uymayan geçerli kelime
     #          ve iki yanyana kelimeye bakarak geriye dönük düzeltme
@@ -684,4 +748,5 @@ if len(sys.argv) > 3:
     with open(os.path.join(out, "params.txt"), "w") as f:
         f.write("pen=%.3f\ndia=%.3f\nreal=%.3f\nretro=%.3f\n" % (P['pen'], P['dia'], P['m_real'], min(P['m_retro'], 99.0)))
         f.write("wbi=%.3f\nwfour=%.3f\nwskip=%.3f\n" % (WT['bi'], WT['four'], WT['skip']))
+        f.write("wassoc=%.4f\n" % WT.get('assoc', 0.0))
         f.write("fzk=%.3f\nfzlim=%d\nfzm=%.3f\nfzc=%.3f\n" % (FKb, LIMb, fzm, KCb))

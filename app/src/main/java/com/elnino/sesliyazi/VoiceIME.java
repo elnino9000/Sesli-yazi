@@ -104,7 +104,11 @@ public class VoiceIME extends InputMethodService {
     private LinearLayout keysBox;
     private FrameLayout bar;
     private LinearLayout suggRow;
-    private final TextView[] sugg = new TextView[3];
+    private static final int SN = 10;
+    private final TextView[] sugg = new TextView[SN];
+    private final java.util.LinkedList<String> hist = new java.util.LinkedList<String>();
+    private volatile java.util.HashMap<String, String> lmAssoc = new java.util.HashMap<String, String>();
+    private volatile double wAssoc = 0.008;
     private int page = 0;      // 0 harf, 1 sembol
     private int shift = 0;     // 0 kapalı, 1 tek harf, 2 kilitli
     private long lastShiftTap = 0;
@@ -290,6 +294,7 @@ public class VoiceIME extends InputMethodService {
                     } catch (Exception ignored) { }
                     java.util.HashMap<String, String> bi = readLm("lm_bi.txt");
                     java.util.HashMap<String, String> tri = readLm("lm_tri.txt");
+                    java.util.HashMap<String, String> asc = readLm("lm_assoc.txt");
                     try {
                         java.io.BufferedReader pr = new java.io.BufferedReader(
                                 new java.io.InputStreamReader(getAssets().open("params.txt"), "UTF-8"));
@@ -299,6 +304,7 @@ public class VoiceIME extends InputMethodService {
                             if (pl.startsWith("dia=")) diaPen = Double.parseDouble(pl.substring(4).trim());
                             if (pl.startsWith("real=")) realM = Double.parseDouble(pl.substring(5).trim());
                             if (pl.startsWith("retro=")) retroM = Double.parseDouble(pl.substring(6).trim());
+                            if (pl.startsWith("wassoc=")) wAssoc = Double.parseDouble(pl.substring(7).trim());
                             if (pl.startsWith("fzk=")) fzk = Double.parseDouble(pl.substring(4).trim());
                             if (pl.startsWith("fzlim=")) fzlim = Integer.parseInt(pl.substring(6).trim());
                             if (pl.startsWith("fzm=")) fzm = Double.parseDouble(pl.substring(4).trim());
@@ -339,6 +345,7 @@ public class VoiceIME extends InputMethodService {
                     words = w;
                     lmBi = bi;
                     lmTri = tri;
+                    lmAssoc = asc;
                     vocab = v;
                     lmReady = true;
                     lmStatus = "";
@@ -447,6 +454,9 @@ public class VoiceIME extends InputMethodService {
         recent.remove(w);
         recent.add(w);
         while (recent.size() > 40) recent.removeFirst();
+        if (prev.length() == 0) hist.clear();
+        hist.addFirst(w);
+        while (hist.size() > 8) hist.removeLast();
         prev3 = prev2;
         prev2 = prev;
         prev = w;
@@ -532,6 +542,19 @@ public class VoiceIME extends InputMethodService {
         }
         if (got[0] != null) prev = got[0];
         if (got[1] != null) prev2 = got[1];
+        // aynı cümledeki önceki kelimeler (anlam ilişkisi için)
+        hist.clear();
+        int q = pos;
+        while (hist.size() < 8 && q > 0) {
+            while (q > 0 && (b.charAt(q - 1) == ' ' || b.charAt(q - 1) == ',')) q--;
+            int k = q;
+            while (k > 0 && Character.isLetter(b.charAt(k - 1))) k--;
+            if (k == q) break;
+            hist.addLast(b.substring(k, q).toLowerCase(TR));
+            q = k;
+        }
+        if (prev2.length() > 0 && !hist.contains(prev2)) hist.addFirst(prev2);
+        if (prev.length() > 0 && !hist.contains(prev)) hist.addFirst(prev);
     }
 
     private void markOwn() {
@@ -587,6 +610,30 @@ public class VoiceIME extends InputMethodService {
         }
     }
 
+
+    /** Cümledeki önceki kelimelerle anlamca ilişkili kelimelere ek puan verir. */
+    private void addAssoc(java.util.HashMap<String, Double> acc) {
+        if (wAssoc <= 0 || lmAssoc.isEmpty()) return;
+        double decay = 1.0;
+        int k = 0;
+        for (String h : hist) {
+            if (k++ >= 8) break;
+            String line = lmAssoc.get(h);
+            if (line != null) {
+                for (String part : line.split(",")) {
+                    int c = part.lastIndexOf(':');
+                    if (c <= 0) continue;
+                    double v;
+                    try { v = Double.parseDouble(part.substring(c + 1)) / 10.0; } catch (Exception e) { continue; }
+                    String w = part.substring(0, c);
+                    Double o = acc.get(w);
+                    acc.put(w, (o == null ? 0 : o) + wAssoc * v * decay);
+                }
+            }
+            decay *= 0.85;
+        }
+    }
+
     private double uniScore(String w) {
         Integer c = words.get(w);
         double s = c == null ? 0 : Math.log(1 + c) / uniLog;
@@ -598,7 +645,7 @@ public class VoiceIME extends InputMethodService {
     private void updateSuggestions() {
         if (sugg[0] == null) return;
         if (afterApos) {
-            for (int i = 0; i < 3; i++) sugg[i].setText("");
+            for (int i = 0; i < SN; i++) sugg[i].setText("");
             return;
         }
         String c1 = prev.length() > 0 ? prev : "^";
@@ -610,19 +657,22 @@ public class VoiceIME extends InputMethodService {
         addSucc(lmBi.get(c1), 0.45, ctx);
         if (c2.length() > 0) addPersonal("", 5.0, ctx, triples, c2 + " " + c1);
         addPersonal("", 3.0, ctx, pairs, c1);
+        addAssoc(ctx);
 
-        String[] out = new String[]{"", "", ""};
-        double[] sc = new double[]{-1, -1, -1};
+        String[] out = new String[SN];
+        java.util.Arrays.fill(out, "");
+        double[] sc = new double[SN];
+        java.util.Arrays.fill(sc, -1);
 
         if (cur.length() == 0) {
             for (java.util.Map.Entry<String, Double> e : ctx.entrySet())
                 rank(out, sc, e.getKey(), e.getValue());
             // boşlukları sık kullandığın kelimelerle doldur
-            if (out[2].length() == 0) {
+            if (out[5].length() == 0) {
                 for (java.util.Map.Entry<String, Integer> e : own.entrySet())
                     rank(out, sc, e.getKey(), 0.01 * e.getValue() / Math.max(1, ownMax));
             }
-            if (out[2].length() == 0) {
+            if (out[5].length() == 0) {
                 String[] def = new String[]{"ve", "bir", "bu", "evet", "tamam", "merhaba"};
                 for (String d : def) {
                     if (!words.containsKey(d) && lmReady) continue;
@@ -630,7 +680,7 @@ public class VoiceIME extends InputMethodService {
                 }
             }
             if (shift == 1) {
-                for (int i = 0; i < 3; i++)
+                for (int i = 0; i < SN; i++)
                     if (out[i].length() > 0) out[i] = out[i].substring(0, 1).toUpperCase(TR) + out[i].substring(1);
             }
         } else {
@@ -665,7 +715,7 @@ public class VoiceIME extends InputMethodService {
             for (java.util.Map.Entry<String, Double> e : best.entrySet())
                 rank(out, sc, e.getKey(), e.getValue());
             boolean capFirst = Character.isUpperCase(cur.charAt(0));
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < SN; i++) {
                 if (out[i].length() > 0 && capFirst)
                     out[i] = out[i].substring(0, 1).toUpperCase(TR) + out[i].substring(1);
             }
@@ -673,7 +723,10 @@ public class VoiceIME extends InputMethodService {
         }
         if (!lmReady && cur.length() == 0)
             out[1] = lmStatus.length() > 0 ? lmStatus : "Model yükleniyor…";
-        for (int i = 0; i < 3; i++) sugg[i].setText(out[i]);
+        for (int i = 0; i < SN; i++) {
+            sugg[i].setText(out[i]);
+            sugg[i].setVisibility(out[i].length() > 0 || i < 3 ? View.VISIBLE : View.GONE);
+        }
     }
 
     private void consider(java.util.HashMap<String, Double> best, String w, double cost,
@@ -953,10 +1006,11 @@ public class VoiceIME extends InputMethodService {
     }
 
     private void rank(String[] out, double[] sc, String w, double s) {
-        for (int i = 0; i < 3; i++) if (out[i].equals(w)) return;
-        for (int i = 0; i < 3; i++) {
+        int n = out.length;
+        for (int i = 0; i < n; i++) if (out[i].equals(w)) return;
+        for (int i = 0; i < n; i++) {
             if (s > sc[i]) {
-                for (int j = 2; j > i; j--) { sc[j] = sc[j - 1]; out[j] = out[j - 1]; }
+                for (int j = n - 1; j > i; j--) { sc[j] = sc[j - 1]; out[j] = out[j - 1]; }
                 sc[i] = s;
                 out[i] = w;
                 return;
@@ -1016,7 +1070,8 @@ public class VoiceIME extends InputMethodService {
         bar = new FrameLayout(this);
         suggRow = new LinearLayout(this);
         suggRow.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = 0; i < 3; i++) {
+        int slotW = (getResources().getDisplayMetrics().widthPixels - dp(46)) / 3;
+        for (int i = 0; i < SN; i++) {
             final int idx = i;
             TextView t = new TextView(this);
             t.setTextColor(Color.WHITE);
@@ -1024,16 +1079,21 @@ public class VoiceIME extends InputMethodService {
             t.setTypeface(Typeface.DEFAULT_BOLD);
             t.setGravity(Gravity.CENTER);
             t.setSingleLine(true);
-            t.setOnTouchListener(new View.OnTouchListener() {
-                @Override public boolean onTouch(View v, MotionEvent e) {
-                    if (e.getAction() == MotionEvent.ACTION_DOWN) pickSuggestion(idx);
-                    return true;
-                }
+            t.setMinWidth(slotW);
+            t.setPadding(dp(14), 0, dp(14), 0);
+            t.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { pickSuggestion(idx); }
             });
             sugg[i] = t;
-            suggRow.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+            suggRow.addView(t, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
-        bar.addView(suggRow, new FrameLayout.LayoutParams(
+        android.widget.HorizontalScrollView hsv = new android.widget.HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        hsv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        hsv.addView(suggRow, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        bar.addView(hsv, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         status = label(16, Color.parseColor("#64D2FF"));
