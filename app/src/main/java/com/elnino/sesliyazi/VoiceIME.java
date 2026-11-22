@@ -255,6 +255,54 @@ public class VoiceIME extends InputMethodService {
                 addTot(k.substring(0, Math.max(0, k.indexOf('>'))), c);
             } catch (Exception ignored) { }
         }
+        corrN.clear();
+        for (String e : sp.getString("corr", "").split(",")) {
+            int i = e.lastIndexOf(':');
+            if (i <= 0) continue;
+            try { corrN.put(e.substring(0, i), Integer.parseInt(e.substring(i + 1))); }
+            catch (Exception ignored) { }
+        }
+        rebuildCorrIndex();
+    }
+
+
+    // --- kişisel düzeltme hafızası: sık yaptığın yazım hatası -> seçtiğin doğru kelime
+    private final java.util.HashMap<String, Integer> corrN = new java.util.HashMap<String, Integer>();   // "yazılan>kelime"
+    private final java.util.HashMap<String, String> corrWord = new java.util.HashMap<String, String>();  // yazılan -> en sık kelime
+    private String autoFixWord = null;
+
+    private void rebuildCorrIndex() {
+        corrWord.clear();
+        java.util.HashMap<String, Integer> top = new java.util.HashMap<String, Integer>();
+        for (java.util.Map.Entry<String, Integer> e : corrN.entrySet()) {
+            int i = e.getKey().indexOf('>');
+            if (i <= 0) continue;
+            String typed = e.getKey().substring(0, i);
+            Integer t = top.get(typed);
+            if (t == null || e.getValue() > t) {
+                top.put(typed, e.getValue());
+                corrWord.put(typed, e.getKey().substring(i + 1));
+            }
+        }
+    }
+
+    private void recordCorr(String typed, String word) {
+        if (typed == null || word == null) return;
+        typed = typed.toLowerCase(TR);
+        word = word.toLowerCase(TR);
+        if (typed.length() < 3 || typed.equals(word) || word.startsWith(typed)) return;
+        if (!isWord(typed) || !isWord(word)) return;
+        String k = typed + ">" + word;
+        Integer c = corrN.get(k);
+        corrN.put(k, (c == null ? 0 : c) + 1);
+        if (corrN.size() > 4000) trim(corrN, 4000, 3000);
+        rebuildCorrIndex();
+    }
+
+    private void forgetCorr(String typed, String word) {
+        if (typed == null || word == null) return;
+        corrN.remove(typed.toLowerCase(TR) + ">" + word.toLowerCase(TR));
+        rebuildCorrIndex();
     }
 
     private void addTot(String ctx, int c) {
@@ -494,6 +542,8 @@ public class VoiceIME extends InputMethodService {
     private long lastImport = 0;
 
     /** Başka ekranda (Importer) yeni şey öğrenildiyse bellektekini ona göre yenile. */
+    private int delVer = 0;
+
     private boolean importChanged() {
         long t = getSharedPreferences("sesli", MODE_PRIVATE).getLong("imported_at", 0);
         if (t != lastImport) {
@@ -514,11 +564,12 @@ public class VoiceIME extends InputMethodService {
         final java.util.HashMap<String, Integer> o2 = new java.util.HashMap<String, Integer>(own);
         final java.util.HashMap<String, Integer> p2 = new java.util.HashMap<String, Integer>(pairs);
         final java.util.HashMap<String, Integer> t2 = new java.util.HashMap<String, Integer>(triples);
+        final java.util.HashMap<String, Integer> c2 = new java.util.HashMap<String, Integer>(corrN);
         new Thread(new Runnable() {
             @Override public void run() {
                 getSharedPreferences("sesli", MODE_PRIVATE).edit()
                         .putString("own", dump(o2)).putString("pairs", dump(p2))
-                        .putString("triples", dump(t2)).apply();
+                        .putString("triples", dump(t2)).putString("corr", dump(c2)).apply();
             }
         }).start();
     }
@@ -750,7 +801,7 @@ public class VoiceIME extends InputMethodService {
         Integer c = words.get(w);
         double lc = c == null ? 0 : Math.log(1 + c);
         Integer o = own.get(w);
-        if (o != null) lc = Math.max(lc, Math.log(1 + o * 2000.0));
+        if (o != null) lc = Math.max(lc, Math.log(1 + o * 20000.0));
         return lc;
     }
 
@@ -837,6 +888,13 @@ public class VoiceIME extends InputMethodService {
             double t = touchOf(w, ll, n);
             if (t < -9.0) continue;
             addCand(best, w, t, n, ctx);
+        }
+
+        // 2b) daha önce bu yazımı düzelttiğin kelime
+        String cw = corrWord.get(p);
+        if (cw != null && !strict) {
+            Integer cn = corrN.get(p + ">" + cw);
+            addCand(best, cw, 2.0 + Math.min(cn == null ? 1 : cn, 5), cw.length(), ctx);
         }
 
         // 3) eksik/fazla harf, yer değiştirme ve Türkçe harfsiz yazım
@@ -1259,7 +1317,10 @@ public class VoiceIME extends InputMethodService {
         autoRestore = null;
         autoLearn = null;
         autoDel = 0;
-        if (cur.length() > 0) ic.deleteSurroundingText(cur.length(), 0);
+        if (cur.length() > 0) {
+            recordCorr(cur.toString(), w);
+            ic.deleteSurroundingText(cur.length(), 0);
+        }
         ic.commitText(w + " ", 1);
         cur.setLength(0);
         learn(w);
@@ -1711,6 +1772,8 @@ public class VoiceIME extends InputMethodService {
             autoRestore = orig;
             autoLearn = orig.toLowerCase(TR);
             autoDel = fix.length() + 1;
+            autoFixWord = fix.toLowerCase(TR);
+            recordCorr(orig, fix);
             finalWord = fix;
         } else {
             ic.commitText(" ", 1);
@@ -1753,6 +1816,8 @@ public class VoiceIME extends InputMethodService {
             // otomatik düzeltmeyi geri al: yazdığın haline döner
             ic.deleteSurroundingText(autoDel, 0);
             ic.commitText(autoRestore, 1);
+            if (autoLearn != null && autoFixWord != null) forgetCorr(autoLearn, autoFixWord);
+            autoFixWord = null;
             if (autoLearn != null && isWord(autoLearn)) {
                 Integer c = own.get(autoLearn);
                 own.put(autoLearn, (c == null ? 0 : c) + 2);   // bir daha düzeltme
@@ -1765,12 +1830,26 @@ public class VoiceIME extends InputMethodService {
             updateSuggestions();
             return;
         }
+        delVer++;
+        boolean wasEmpty = cur.length() == 0;
         if (cur.length() > 0) {
             cur.setLength(cur.length() - 1);
             if (!taps.isEmpty()) taps.remove(taps.size() - 1);
         }
         sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL);
         updateSuggestions();
+        if (wasEmpty) {
+            // önceki kelimenin üstüne geldik: harf harf silerken öneriler o kelimeye göre hesaplansın
+            final int ver = ++delVer;
+            h.postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (ver != delVer || listening) return;
+                    markOwn();
+                    syncFromText();
+                    updateSuggestions();
+                }
+            }, 45);
+        }
     }
 
     private void autoShift() {
@@ -2047,6 +2126,8 @@ public class VoiceIME extends InputMethodService {
 
     // --- konuşma tanıma iyileştirmeleri
     private String lastPartial = "";
+    private Intent recIntent = null;
+    private boolean beepMuted = false;
     private int silenceRetries = 0;
 
     private int unknownCount(String s) {
@@ -2105,6 +2186,35 @@ public class VoiceIME extends InputMethodService {
         return out.toString();
     }
 
+
+    /** Konuşma tanıyıcının "bip" sesini dinleme boyunca kapatır (kesik kesik açılıp kapanma hissini azaltır). */
+    private void muteBeep(boolean on) {
+        if (on == beepMuted) return;
+        try {
+            android.media.AudioManager am = (android.media.AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            int dir = on ? android.media.AudioManager.ADJUST_MUTE : android.media.AudioManager.ADJUST_UNMUTE;
+            am.adjustStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION, dir, 0);
+            am.adjustStreamVolume(android.media.AudioManager.STREAM_SYSTEM, dir, 0);
+            beepMuted = on;
+        } catch (Throwable ignored) { }
+    }
+
+    /** Aynı tanıyıcıyla, ekranı değiştirmeden yeniden dinlemeye başlar. */
+    private void restartInPlace(final int mySession, long delay) {
+        h.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!wanted || mySession != session) return;
+                if (recognizer == null || recIntent == null) { startRecognizer(); return; }
+                lastPartial = "";
+                try {
+                    recognizer.startListening(recIntent);
+                } catch (Throwable t) {
+                    startRecognizer();
+                }
+            }
+        }, delay);
+    }
+
     private void startRecognizer() {
         if (getCurrentInputConnection() == null) {
             wanted = false;
@@ -2128,6 +2238,7 @@ public class VoiceIME extends InputMethodService {
         recognizer.setRecognitionListener(new Listener(mySession));
 
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        recIntent = intent;
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "tr-TR");
@@ -2142,6 +2253,7 @@ public class VoiceIME extends InputMethodService {
 
         listening = true;
         lastPartial = "";
+        muteBeep(true);
         paintMic(true);
         startPulse();
         setStatus("Dinliyorum… konuş");
@@ -2167,6 +2279,7 @@ public class VoiceIME extends InputMethodService {
 
     private void stopAll() {
         wanted = false;
+        muteBeep(false);
         listening = false;
         session++;
         destroyRecognizer();
@@ -2231,21 +2344,19 @@ public class VoiceIME extends InputMethodService {
             lastPartial = "";
             lastErr = "-";
             updateDiag();
+            if (wanted) {
+                // sürekli yazım: ekran ve tanıyıcı aynı kalsın, sadece yeniden dinle
+                setPartial("");
+                restartInPlace(mySession, 40);
+                return;
+            }
             setPartial("");
             listening = false;
             stopPulse();
             paintMic(false);
             destroyRecognizer();
-            if (wanted) {
-                // Sürekli yazım: kısa bekleyip tekrar dinle
-                h.postDelayed(new Runnable() {
-                    @Override public void run() {
-                        if (wanted && !listening && mySession == session) startRecognizer();
-                    }
-                }, 120);
-            } else {
-                setStatus("Konuşmak için mikrofona dokun");
-            }
+            muteBeep(false);
+            setStatus("Konuşmak için mikrofona dokun");
         }
 
         @Override
@@ -2273,6 +2384,13 @@ public class VoiceIME extends InputMethodService {
             silenceRetries = 0;
         }
         lastErr = errName(error);
+        boolean quiet0 = error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH;
+        if (wanted && quiet0 && (salvaged || silenceRetries < 8)) {
+            if (!salvaged) silenceRetries++;
+            setPartial("");
+            restartInPlace(mySession, 60);
+            return;
+        }
         listening = false;
         stopPulse();
         paintMic(false);
@@ -2317,6 +2435,7 @@ public class VoiceIME extends InputMethodService {
         }
 
         wanted = false;
+        muteBeep(false);
         updateDiag();
         switch (error) {
             case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
