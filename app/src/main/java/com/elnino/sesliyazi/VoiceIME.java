@@ -721,18 +721,48 @@ public class VoiceIME extends InputMethodService {
         }
     }
 
+    private int idxStamp = -1;
+    private final java.util.HashMap<String, java.util.ArrayList<String>> idxPairs =
+            new java.util.HashMap<String, java.util.ArrayList<String>>();
+    private final java.util.HashMap<String, java.util.ArrayList<String>> idxTriples =
+            new java.util.HashMap<String, java.util.ArrayList<String>>();
+
+    private void ensureIdx() {
+        int stamp = pairs.size() * 100003 + triples.size();
+        if (stamp == idxStamp) return;
+        idxStamp = stamp;
+        buildIdx(pairs, idxPairs);
+        buildIdx(triples, idxTriples);
+    }
+
+    private static void buildIdx(java.util.HashMap<String, Integer> src,
+                                 java.util.HashMap<String, java.util.ArrayList<String>> idx) {
+        idx.clear();
+        for (String k : src.keySet()) {
+            int g = k.indexOf('>');
+            if (g <= 0) continue;
+            String c = k.substring(0, g);
+            java.util.ArrayList<String> l = idx.get(c);
+            if (l == null) { l = new java.util.ArrayList<String>(4); idx.put(c, l); }
+            l.add(k);
+        }
+    }
+
     private void addPersonal(String prefix, double weight, java.util.HashMap<String, Double> acc,
                              java.util.HashMap<String, Integer> src, String ctx) {
         Integer tot = ctxTot.get(ctx);
         if (tot == null || tot == 0) return;
-        String pre = ctx + ">";
+        ensureIdx();
+        java.util.ArrayList<String> ks = (src == pairs ? idxPairs : idxTriples).get(ctx);
+        if (ks == null) return;
+        int off = ctx.length() + 1;
         double conf = Math.min(1.0, tot / 3.0);
-        for (java.util.Map.Entry<String, Integer> e : src.entrySet()) {
-            String k = e.getKey();
-            if (!k.startsWith(pre)) continue;
-            String w = k.substring(pre.length());
+        for (String k : ks) {
+            Integer v = src.get(k);
+            if (v == null) continue;
+            String w = k.substring(off);
             Double o = acc.get(w);
-            acc.put(w, (o == null ? 0 : o) + weight * conf * e.getValue() / tot);
+            acc.put(w, (o == null ? 0 : o) + weight * conf * v / tot);
         }
     }
 
@@ -3176,8 +3206,16 @@ public class VoiceIME extends InputMethodService {
         try { doDelete0(); } catch (Throwable t) { reportErr(t); }
     }
 
+    private final Runnable updRun = new Runnable() {
+        @Override public void run() {
+            try { updateSuggestions0(); } catch (Throwable t) { reportErr(t); }
+        }
+    };
+
+    /** Öneriler kısa bir gecikmeyle (hızlı yazarken birleştirilerek) yenilenir; tuş yazımı hiç beklemez. */
     private void updateSuggestions() {
-        try { updateSuggestions0(); } catch (Throwable t) { reportErr(t); }
+        h.removeCallbacks(updRun);
+        h.postDelayed(updRun, 35);
     }
 
     private void commitFinal(String spoken) {
