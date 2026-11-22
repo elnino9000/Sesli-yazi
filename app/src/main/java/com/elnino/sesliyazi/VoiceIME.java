@@ -2813,25 +2813,7 @@ public class VoiceIME extends InputMethodService {
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 8);
-        intent.putExtra("android.speech.extra.GET_AUDIO_FORMAT", false);
-        intent.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, false);
-        try {
-            // senin sık kullandığın kelimeleri tanıyıcıya ipucu olarak ver (isimler, özel kelimeler)
-            java.util.ArrayList<java.util.Map.Entry<String, Integer>> es =
-                    new java.util.ArrayList<java.util.Map.Entry<String, Integer>>(own.entrySet());
-            java.util.Collections.sort(es, new java.util.Comparator<java.util.Map.Entry<String, Integer>>() {
-                @Override public int compare(java.util.Map.Entry<String, Integer> a, java.util.Map.Entry<String, Integer> b) {
-                    return b.getValue() - a.getValue();
-                }
-            });
-            java.util.ArrayList<String> bias = new java.util.ArrayList<String>();
-            for (java.util.Map.Entry<String, Integer> e : es) {
-                if (e.getKey().length() >= 3) bias.add(e.getKey());
-                if (bias.size() >= 80) break;
-            }
-            if (!bias.isEmpty()) intent.putStringArrayListExtra("android.speech.extra.BIASING_STRINGS", bias);
-        } catch (Throwable ignored) { }
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
         intent.putExtra("android.speech.extra.MASK_OFFENSIVE_WORDS", false);
         intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
