@@ -626,7 +626,7 @@ if len(sys.argv) > 3:
                 if d < 10 ** 6:
                     dl.append((x, d))
         DATA.append((w, g, acc, dl))
-    def fz_eval(FK, LIM, use_ctx, margin):
+    def fz_eval(FK, LIM, use_ctx, margin, KC=12.0):
         t1 = t3 = acc_n = acc_ok = 0
         for w, g, acc, dl in DATA:
             cl = len(g)
@@ -635,7 +635,7 @@ if len(sys.argv) > 3:
                 cx = acc.get(x, 0) if use_ctx else 0
                 if d > LIM * cl and cx <= 0:
                     continue
-                sc.append((WUNI * math.log(1 + uni_c[x]) / ulog + KCTX * cx - 0.002 * len(x) - d / 100.0 * FK, x))
+                sc.append((WUNI * math.log(1 + uni_c[x]) / ulog + KC * cx - 0.002 * len(x) - d / 100.0 * FK, x))
             sc.sort(reverse=True)
             top = [x for _, x in sc[:3]]
             t1 += bool(top) and top[0] == w
@@ -648,22 +648,22 @@ if len(sys.argv) > 3:
         n = max(1, len(DATA))
         return 100.0 * t1 / n, 100.0 * t3 / n, 100.0 * acc_n / n, 100.0 * acc_ok / max(1, acc_n)
     bestf = None
-    for FK in (1.0, 2.0, 3.5):
-        for LIM in (45, 60):
-            for uc in (False, True):
-                r = fz_eval(FK, LIM, uc, 99)
-                print("  AĞIR HATA FK=%.1f LIM=%d bağlam=%s -> ilk1 %.1f%%  ilk3 %.1f%%" % (FK, LIM, uc, r[0], r[1]))
-                if uc and (bestf is None or r[1] + r[0] > bestf[0]):
-                    bestf = (r[0] + r[1], FK, LIM)
-    _, FKb, LIMb = bestf
+    for FK in (3.5, 6.0, 10.0):
+        for KC in (6.0, 12.0, 24.0, 48.0):
+            r = fz_eval(FK, 60, True, 99, KC)
+            print("  AĞIR HATA FK=%.1f KC=%.0f -> ilk1 %.1f%%  ilk3 %.1f%%" % (FK, KC, r[0], r[1]))
+            if bestf is None or r[1] + r[0] > bestf[0]:
+                bestf = (r[0] + r[1], FK, KC)
+    _, FKb, KCb = bestf
+    LIMb = 60
     fzm = 99.0
-    for mg in (0.0, 0.5, 1.0, 2.0, 3.0, 5.0):
-        r = fz_eval(FKb, LIMb, True, mg)
+    for mg in (0.0, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0):
+        r = fz_eval(FKb, LIMb, True, mg, KCb)
         print("  OTOMATİK DÜZELTME marj=%.1f: kapsam %.1f%% doğruluk %.1f%%" % (mg, r[2], r[3]))
         if r[3] >= 85 and fzm == 99.0:
             fzm = mg
-    print("AĞIR HATA SEÇİLEN: FK=%.1f LIM=%d marj=%.1f" % (FKb, LIMb, fzm))
+    print("AĞIR HATA SEÇİLEN: FK=%.1f KC=%.0f marj=%.1f" % (FKb, KCb, fzm))
     with open(os.path.join(out, "params.txt"), "w") as f:
         f.write("pen=%.3f\ndia=%.3f\nreal=%.3f\nretro=%.3f\n" % (P['pen'], P['dia'], P['m_real'], min(P['m_retro'], 99.0)))
         f.write("wbi=%.3f\nwfour=%.3f\nwskip=%.3f\n" % (WT['bi'], WT['four'], WT['skip']))
-        f.write("fzk=%.3f\nfzlim=%d\nfzm=%.3f\n" % (FKb, LIMb, fzm))
+        f.write("fzk=%.3f\nfzlim=%d\nfzm=%.3f\nfzc=%.3f\n" % (FKb, LIMb, fzm, KCb))

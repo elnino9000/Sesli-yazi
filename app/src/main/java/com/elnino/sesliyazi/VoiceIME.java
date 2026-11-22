@@ -160,7 +160,7 @@ public class VoiceIME extends InputMethodService {
     private boolean noFix = false;
     private volatile double diaPen = 0.03, realM = 0.8, retroM = 0.8;
     // ağır yazım hatası (çok harf yanlış) için bulanık eşleştirme
-    private volatile double fzk = 2.0, fzm = 1.0;
+    private volatile double fzk = 3.5, fzm = 5.0, fzc = 12.0;
     private volatile int fzlim = 60;
     private volatile String[] freqWords = new String[0];
     private final int[] dA = new int[48], dB = new int[48], dC = new int[48];
@@ -301,6 +301,7 @@ public class VoiceIME extends InputMethodService {
                             if (pl.startsWith("fzk=")) fzk = Double.parseDouble(pl.substring(4).trim());
                             if (pl.startsWith("fzlim=")) fzlim = Integer.parseInt(pl.substring(6).trim());
                             if (pl.startsWith("fzm=")) fzm = Double.parseDouble(pl.substring(4).trim());
+                            if (pl.startsWith("fzc=")) fzc = Double.parseDouble(pl.substring(4).trim());
                         }
                         pr.close();
                     } catch (Exception ignored) { }
@@ -908,7 +909,7 @@ public class VoiceIME extends InputMethodService {
                 Double cx = ctx.get(x);
                 double c = cx == null ? 0 : cx;
                 if (d > fzlim * cl && c <= 0) continue;
-                double sc = uniScore(x) * 0.2 + 12.0 * c - x.length() * 0.002 - d / 100.0 * fzk;
+                double sc = uniScore(x) * 0.2 + fzc * c - x.length() * 0.002 - d / 100.0 * fzk;
                 int pos = top.size();
                 while (pos > 0 && (Double) top.get(pos - 1)[1] < sc) pos--;
                 if (pos < 5) {
