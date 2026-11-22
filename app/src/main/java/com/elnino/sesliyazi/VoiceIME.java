@@ -1048,7 +1048,25 @@ public class VoiceIME extends InputMethodService {
         return s;
     }
 
+    /** Cümle başında (boş kutu, nokta/soru/ünlem + boşluk, yeni satır) ilk harf otomatik büyük olsun. */
+    private void autoCaps() {
+        if (page != 0 || shift == 2 || password || noFix) return;
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        CharSequence b = ic.getTextBeforeCursor(3, 0);
+        String t = b == null ? "" : b.toString();
+        boolean start;
+        if (t.isEmpty()) start = true;
+        else {
+            char l = t.charAt(t.length() - 1);
+            String tr = t.trim();
+            start = l == '\n' || ((l == ' ') && (tr.isEmpty() || ".?!".indexOf(tr.charAt(tr.length() - 1)) >= 0));
+        }
+        if (start && shift == 0) { shift = 1; refreshLabels(); }
+    }
+
     private void updateSuggestions() {
+        if (cur.length() == 0) autoCaps();
         if (sugg[0] == null) return;
         if (afterApos) {
             for (int i = 0; i < SN; i++) sugg[i].setText("");
@@ -1393,7 +1411,7 @@ public class VoiceIME extends InputMethodService {
             if (bestS == null || (Double) state[1] > (Double) bestS[1]) bestS = state;
         }
         if (bestS == null) return null;
-        if ((Double) bestS[2] < -0.9 * n) return null;
+        if ((Double) bestS[2] < (n < 12 ? -0.3 : -0.7) * n) return null;
         @SuppressWarnings("unchecked")
         java.util.ArrayList<String> ws = (java.util.ArrayList<String>) bestS[0];
         return ws.toArray(new String[0]);
@@ -1404,7 +1422,7 @@ public class VoiceIME extends InputMethodService {
         if (noFix || !lmReady || cur.length() < 8) return false;
         String orig = cur.toString();
         String lo = orig.toLowerCase(TR);
-        if (isKnown(lo)) return false;
+        if (isKnown(lo) || hasPrefix(lo)) return false;   // gerçek bir kelimenin başıysa bölme
         String[] ws = segment(lo);
         if (ws == null) return false;
         StringBuilder sb = new StringBuilder();
@@ -1418,7 +1436,8 @@ public class VoiceIME extends InputMethodService {
         ic.deleteSurroundingText(orig.length(), 0);
         ic.commitText(joined + after, 1);
         autoRestore = orig;
-        autoLearn = null;
+        autoLearn = lo;          // geri alırsan bu yazımı kelime olarak öğren
+        autoFixWord = null;
         autoDel = joined.length() + after.length();
         cur.setLength(0);
         for (String w : ws) learn(w);
@@ -1888,10 +1907,13 @@ public class VoiceIME extends InputMethodService {
         g.setCornerRadius(dp(9));
         t.setBackground(new android.graphics.drawable.InsetDrawable(
                 g, dp(2), dp(3), dp(2), dp(3)));
+        final int[] cnt = {0};
         final Runnable rep = new Runnable() {
             @Override public void run() {
-                action.run();
-                h.postDelayed(this, 55);
+                cnt[0]++;
+                int times = cnt[0] > 30 ? 4 : cnt[0] > 18 ? 3 : cnt[0] > 8 ? 2 : 1;
+                for (int i = 0; i < times; i++) action.run();
+                h.postDelayed(this, cnt[0] > 8 ? 35 : 55);
             }
         };
         t.setOnTouchListener(new View.OnTouchListener() {
@@ -1903,6 +1925,7 @@ public class VoiceIME extends InputMethodService {
                         tapY = e.getRawY();
                         tapFresh = true;
                         action.run();
+                        cnt[0] = 0;
                         if (repeat) h.postDelayed(rep, 380);
                         return true;
                     case MotionEvent.ACTION_UP:
