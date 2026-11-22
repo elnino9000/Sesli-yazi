@@ -1945,7 +1945,7 @@ public class VoiceIME extends InputMethodService {
             @Override public void run() { page = 1 - page; buildKeys(); }
         }, false));
         TextView emo = mkKey("", 1.3f, true, new Runnable() {
-            @Override public void run() { page = 2; buildKeys(); }
+            @Override public void run() { page = 2; emoCat = recentEmojis().isEmpty() ? 1 : 0; buildKeys(); }
         }, false);
         emo.setForeground(new SmileyDrawable());
         b.addView(emo);
@@ -2494,6 +2494,8 @@ public class VoiceIME extends InputMethodService {
         if (on == beepMuted) return;
         try {
             android.media.AudioManager am = (android.media.AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            // telefon sessiz/titreşim modundayken ses ayarına hiç dokunma (sesli moda geçirmesin)
+            if (on && am.getRingerMode() != android.media.AudioManager.RINGER_MODE_NORMAL) return;
             int dir = on ? android.media.AudioManager.ADJUST_MUTE : android.media.AudioManager.ADJUST_UNMUTE;
             am.adjustStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION, dir, 0);
             am.adjustStreamVolume(android.media.AudioManager.STREAM_SYSTEM, dir, 0);
