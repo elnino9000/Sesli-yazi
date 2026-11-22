@@ -2529,18 +2529,68 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** Tanıyıcının verdiği alternatifler arasından, bilinmeyen kelimesi en az olanı seçer. */
+    /** Bir cümlenin dil modeli puanı: sık kelimeler, kelime çiftleri ve kendi kelimelerin yüksek; bilinmeyen kelime düşük. */
+    private double sentenceScore(String sent) {
+        String[] ws = sent.toLowerCase(TR).split("[^\\p{L}']+");
+        double sc = 0;
+        int n = 0;
+        String prevW = "";
+        for (String w0 : ws) {
+            String w = w0.replace("'", "");
+            if (w.isEmpty()) continue;
+            n++;
+            if (isKnown(w)) {
+                sc += 0.12 * priorOf(w);
+            } else {
+                sc -= 3.0;
+            }
+            if (prevW.length() > 0) {
+                java.util.HashMap<String, Double> cm = contextFor("", prevW);
+                Double bb = cm.get(w);
+                if (bb != null) sc += 2.5 * Math.min(1.0, bb * 4);
+            }
+            prevW = w;
+        }
+        return n == 0 ? -99 : sc;
+    }
+
     private String pickBest(Bundle b) {
         java.util.ArrayList<String> l = b == null ? null
                 : b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
         if (l == null || l.isEmpty()) return null;
         String best = l.get(0);
         if (l.size() == 1 || !lmReady) return best;
-        int bu = unknownCount(best);
-        for (int i = 1; i < l.size() && bu > 0; i++) {
-            int u = unknownCount(l.get(i));
-            if (u < bu) { best = l.get(i); bu = u; }
+        float[] conf = b.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES);
+        double top = Double.NEGATIVE_INFINITY;
+        int bi = 0;
+        double s0 = 0;
+        for (int i = 0; i < l.size(); i++) {
+            double c = (conf != null && i < conf.length && conf[i] >= 0) ? conf[i] : (i == 0 ? 0.8 : 0.5 - 0.05 * i);
+            double sc = 4.0 * c + sentenceScore(unmask(l.get(i)));
+            if (i == 0) s0 = sc;
+            if (sc > top) { top = sc; bi = i; }
         }
+        // tanıyıcının ilk tercihini ancak dil modeli açıkça daha iyi bulursa değiştir
+        if (bi != 0 && top - s0 > 1.2) best = l.get(bi);
         return best;
+    }
+
+    private static final String[][] SPOKEN = {
+        {"\\s*\\b(soru işareti)\\b", "?"},
+        {"\\s*\\b(ünlem işareti|ünlem)\\b", "!"},
+        {"\\s*\\b(virgül)\\b", ","},
+        {"\\s*\\b(iki nokta üst üste)\\b", ":"},
+        {"\\s*\\b(yeni satır|alt satır|satır başı)\\b\\s*", "\n"},
+        {"\\s*\\bnokta\\s*$", "."}};
+
+    /** "virgül", "soru işareti", "yeni satır" gibi söylenen noktalama komutlarını simgeye çevirir. */
+    private String spokenPunct(String sp) {
+        String r = sp;
+        for (String[] pr : SPOKEN) {
+            r = java.util.regex.Pattern.compile(pr[0], java.util.regex.Pattern.CASE_INSENSITIVE
+                    | java.util.regex.Pattern.UNICODE_CASE).matcher(r).replaceAll(java.util.regex.Matcher.quoteReplacement(pr[1]));
+        }
+        return r.trim();
     }
 
     /** Sansürlenmiş kelimeleri (s*** gibi) sözlükten en olası kelimeyle tamamlar. */
@@ -2685,7 +2735,25 @@ public class VoiceIME extends InputMethodService {
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 8);
+        intent.putExtra("android.speech.extra.GET_AUDIO_FORMAT", false);
+        intent.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, false);
+        try {
+            // senin sık kullandığın kelimeleri tanıyıcıya ipucu olarak ver (isimler, özel kelimeler)
+            java.util.ArrayList<java.util.Map.Entry<String, Integer>> es =
+                    new java.util.ArrayList<java.util.Map.Entry<String, Integer>>(own.entrySet());
+            java.util.Collections.sort(es, new java.util.Comparator<java.util.Map.Entry<String, Integer>>() {
+                @Override public int compare(java.util.Map.Entry<String, Integer> a, java.util.Map.Entry<String, Integer> b) {
+                    return b.getValue() - a.getValue();
+                }
+            });
+            java.util.ArrayList<String> bias = new java.util.ArrayList<String>();
+            for (java.util.Map.Entry<String, Integer> e : es) {
+                if (e.getKey().length() >= 3) bias.add(e.getKey());
+                if (bias.size() >= 80) break;
+            }
+            if (!bias.isEmpty()) intent.putStringArrayListExtra("android.speech.extra.BIASING_STRINGS", bias);
+        } catch (Throwable ignored) { }
         intent.putExtra("android.speech.extra.MASK_OFFENSIVE_WORDS", false);
         intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
@@ -2942,7 +3010,7 @@ public class VoiceIME extends InputMethodService {
             setStatus("Yazı kutusu bulunamadı");
             return;
         }
-        String sp = unmask(spoken).trim();
+        String sp = spokenPunct(unmask(spoken).trim());
         if (sp.isEmpty()) return;
 
         CharSequence before = ic.getTextBeforeCursor(3, 0);
