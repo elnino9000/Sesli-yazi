@@ -46,8 +46,11 @@ print("sözlük:", len(vocab_all), "n-gram sözlüğü:", len(vocab_list))
 # ---- 2. geçiş: ikili ve üçlü diziler
 bi_path = os.path.join(tmp, "bi.txt")
 tri_path = os.path.join(tmp, "tri.txt")
+four_path = os.path.join(tmp, "four.txt")
+skip_path = os.path.join(tmp, "skip.txt")
 with open(corpus, encoding='utf-8', errors='ignore') as f, \
-        open(bi_path, "w", encoding="utf-8") as fb, open(tri_path, "w", encoding="utf-8") as ft:
+        open(bi_path, "w", encoding="utf-8") as fb, open(tri_path, "w", encoding="utf-8") as ft, \
+        open(four_path, "w", encoding="utf-8") as f4, open(skip_path, "w", encoding="utf-8") as fs:
     for line in f:
         for ws in segments(line):
             toks = ["^"] + [w if w in vocab else None for w in ws]
@@ -60,6 +63,9 @@ with open(corpus, encoding='utf-8', errors='ignore') as f, \
                     fb.write("%s\t%s\n" % (a, b))
                     if i >= 2 and toks[i - 2] is not None:
                         ft.write("%s %s\t%s\n" % (toks[i - 2], a, b))
+                        fs.write("%s\t%s\n" % (toks[i - 2], b))
+                        if i >= 3 and toks[i - 3] is not None:
+                            f4.write("%s %s %s\t%s\n" % (toks[i - 3], toks[i - 2], a, b))
 
 def counted(path):
     cmd = "LC_ALL=C sort -S 2G -T %s %s | uniq -c" % (tmp, path)
@@ -106,6 +112,8 @@ def build(path, name, minc, topk, minTotal, maxCtx):
 
 build(bi_path, "lm_bi.txt", 2, 8, 5, 60000)
 build(tri_path, "lm_tri.txt", 2, 5, 4, 140000)
+build(four_path, "lm_four.txt", 2, 4, 4, 120000)
+build(skip_path, "lm_skip.txt", 3, 5, 8, 40000)
 
 # ---------------------------------------------------------------- ölçüm ve ayar
 # Eğitimde kullanılmayan cümlelerde (1) sonraki kelime, (2) yanlış basılan harflerden
@@ -135,6 +143,8 @@ if len(sys.argv) > 3:
 
     bi = load_lm("lm_bi.txt")
     tri = load_lm("lm_tri.txt")
+    four = load_lm("lm_four.txt")
+    skip = load_lm("lm_skip.txt")
 
     # Türkçe Q klavye komşulukları (Java ile aynı)
     ROWS = ["qwertyuıopğü", "asdfghjklşi", "zxcvbnmöç"]
@@ -169,18 +179,32 @@ if len(sys.argv) > 3:
             res.append(allw[i]); i += 1
         return res
 
-    def ctx_scores(p2, p1):
-        acc = {}
-        if p2 is not None:
-            e = tri.get(p2 + " " + p1)
-            if e:
-                for w, c in e[0]:
-                    acc[w] = acc.get(w, 0) + c / e[1]
-        e = bi.get(p1)
-        if e:
+    WT = {'bi': 0.45, 'tri': 1.0, 'four': 0.0, 'skip': 0.0}
+
+    def add_lm(acc, e, wt):
+        if e and wt:
             for w, c in e[0]:
-                acc[w] = acc.get(w, 0) + 0.45 * c / e[1]
+                acc[w] = acc.get(w, 0) + wt * c / e[1]
+
+    def ctx_list(hist):
+        """hist: önceki kelimeler (en yeni sonda, cümle başı '^' ile başlar)"""
+        acc = {}
+        if not hist:
+            return acc
+        add_lm(acc, bi.get(hist[-1]), WT['bi'])
+        if len(hist) >= 2:
+            add_lm(acc, tri.get(hist[-2] + " " + hist[-1]), WT['tri'])
+            add_lm(acc, skip.get(hist[-2]), WT['skip'])
+        if len(hist) >= 3:
+            add_lm(acc, four.get(" ".join(hist[-3:])), WT['four'])
         return acc
+
+    def ctx_scores(p2, p1):
+        h = []
+        if p2 is not None:
+            h.append(p2)
+        h.append(p1)
+        return ctx_list(h)
 
     KCTX, WUNI = 12.0, 0.2
 
@@ -231,21 +255,32 @@ if len(sys.argv) > 3:
     random.shuffle(TESTS)
     print("ölçüm cümlesi:", len(TESTS))
 
-    # ---- (1) sonraki kelime (harf yazılmadan)
-    hit = tot = 0
-    for ws in TESTS[:6000]:
-        toks = ["^"] + ws
-        for i in range(1, len(toks)):
-            if toks[i] is None or toks[i - 1] is None:
-                continue
-            p2 = toks[i - 2] if i >= 2 else None
-            if i >= 2 and p2 is None:
-                continue
-            acc = ctx_scores(p2, toks[i - 1])
-            top = [w for w, _ in sorted(acc.items(), key=lambda x: -x[1])[:3]]
-            tot += 1
-            hit += toks[i] in top
-    print("SONRAKİ KELİME ilk3 isabet: %.1f%% (%d/%d)" % (100.0 * hit / max(1, tot), hit, tot))
+    # ---- (1) sonraki kelime (harf yazılmadan): 4'lü ve atlamalı modellerin katkısını ölç
+    def nw_eval(n_sent):
+        hit = tot = 0
+        for ws in TESTS[:n_sent]:
+            toks = ["^"] + ws
+            for i in range(1, len(toks)):
+                if toks[i] is None or any(t is None for t in toks[max(0, i - 3):i]):
+                    continue
+                acc = ctx_list(toks[max(0, i - 3):i])
+                top = [w for w, _ in sorted(acc.items(), key=lambda x: -x[1])[:3]]
+                tot += 1
+                hit += toks[i] in top
+        return 100.0 * hit / max(1, tot), tot
+
+    bestw = None
+    for wb in (0.3, 0.6):
+        for w4 in (0.0, 0.5, 1.0, 2.0):
+            for wsk in (0.0, 0.15, 0.4):
+                WT.update({'bi': wb, 'tri': 1.0, 'four': w4, 'skip': wsk})
+                r, n = nw_eval(3000)
+                print("  sonraki kelime bi=%.2f dörtlü=%.1f atlamalı=%.2f -> %.1f%% (%d)" % (wb, w4, wsk, r, n))
+                if bestw is None or r > bestw[0]:
+                    bestw = (r, wb, w4, wsk)
+    WT.update({'bi': bestw[1], 'tri': 1.0, 'four': bestw[2], 'skip': bestw[3]})
+    r, n = nw_eval(6000)
+    print("SONRAKİ KELİME ilk3 isabet (en iyi bi=%.2f dörtlü=%.1f atlamalı=%.2f): %.1f%% (%d)" % (bestw[1], bestw[2], bestw[3], r, n))
 
     # ---- (2) gerçek yazım hatası düzeltme hattı: bilinmeyen kelime, bağlama uymayan geçerli kelime
     #          ve iki yanyana kelimeye bakarak geriye dönük düzeltme
@@ -347,57 +382,73 @@ if len(sys.argv) > 3:
             break
     print("hat örnek cümle:", len(SENT))
 
-    def run(P, use_real, use_retro):
+    FAILS = []
+
+    def run(P, use_real, use_retro, policy='skip', dump=False):
         ok_c = n_c = bad_clean = n_clean = 0
+        nw_hit = nw_tot = 0
         for ws, typed in SENT:
-            out_w = []
-            toks = ["^"]
+            hist = ["^"]          # bağlam için kullanılan kelimeler
+            res = []
             for i, t in enumerate(typed):
-                p1 = toks[-1]
-                p2 = toks[-2] if len(toks) >= 2 else None
-                acc = ctx_scores(p2, p1)
+                acc = ctx_list(hist[-3:])
+                # bağlamdan sonraki kelime tahmini (yazım hatalı bağlamla)
+                top = [w for w, _ in sorted(acc.items(), key=lambda x: -x[1])[:3]]
+                nw_tot += 1
+                nw_hit += ws[i] in top
                 fixed = t
                 if t not in uni_c:
                     v, d = best_fix(t, acc, None, P)
-                    if v: fixed = v
+                    if v:
+                        fixed = v
                 elif use_real and len(t) >= 3:
                     v, d = best_fix(t, acc, None, P)
                     if v and d > P['m_real'] and acc.get(v, 0) > 0:
                         fixed = v
-                toks.append(fixed)
-                # geriye dönük: önceki kelimeyi yeni kelimeye göre sına
-                if use_retro and len(toks) >= 3:
-                    wprev = toks[-2]
-                    pp1 = toks[-3]
-                    pp2 = toks[-4] if len(toks) >= 4 else None
-                    acc2 = ctx_scores(pp2, pp1)
+                res.append(fixed)
+                if policy == 'raw' or fixed in uni_c:
+                    hist.append(fixed)
+                if use_retro and len(res) >= 2:
+                    wprev = res[-2]
+                    acc2 = ctx_list(hist[-4:-2] if len(hist) >= 4 else hist[:-1])
                     v, d = best_fix(wprev, acc2, fixed, P)
                     if v and d > P['m_retro'] and len(wprev) >= 3:
-                        toks[-2] = v
-            res = toks[1:]
+                        res[-2] = v
             for w, t, r in zip(ws, typed, res):
                 if t != w:
                     n_c += 1; ok_c += (r == w)
+                    if dump and r != w and len(FAILS) < 40:
+                        FAILS.append((w, t, r, " ".join(typed)))
                 else:
                     n_clean += 1; bad_clean += (r != w)
-        return 100.0 * ok_c / max(1, n_c), 100.0 * bad_clean / max(1, n_clean), n_c, n_clean
+                    if dump and r != w and len(FAILS) < 80:
+                        FAILS.append((w, t, r, " ".join(typed)))
+        return (100.0 * ok_c / max(1, n_c), 100.0 * bad_clean / max(1, n_clean), n_c, n_clean,
+                100.0 * nw_hit / max(1, nw_tot))
 
     base_ok = None
     P0 = {'pen': 0.1, 'dia': 0.03, 'm_real': 1e9, 'm_retro': 1e9}
-    r0 = run(P0, False, False)
-    print("YALNIZ BİLİNMEYEN: hatalı kelimeyi doğru bulma %.1f%%  doğru kelimeyi bozma %.2f%%  (hatalı %d, doğru %d)" % r0)
+    r0 = run(P0, False, False, 'raw')
+    print("YALNIZ BİLİNMEYEN: hatalı kelimeyi doğru bulma %.1f%%  doğru kelimeyi bozma %.2f%%  (hatalı %d, doğru %d) | hatalı bağlamla sonraki kelime %.1f%%" % r0)
+    r1 = run(P0, False, False, 'skip')
+    print("BAĞLAM HATAYI ATLASIN: sonraki kelime %.1f%% (hatalı kelimeyi bağlama katarsa: %.1f%%)" % (r1[4], r0[4]))
     best = None
     for pen in (0.05, 0.1, 0.2):
         for dia in (0.02, 0.05):
             for mr in (0.4, 0.8, 1.6):
                 for mt in (0.4, 0.8, 1.6, 1e9):
                     P = {'pen': pen, 'dia': dia, 'm_real': mr, 'm_retro': mt}
-                    ok, bad, nc, ncl = run(P, True, mt < 1e8)
+                    ok, bad, nc, ncl, nwh = run(P, True, mt < 1e8)
                     score = ok - 8.0 * bad
                     print("  pen=%.2f dia=%.2f gerçek=%.1f geri=%s -> düzelt %.1f%%  bozma %.2f%%" % (pen, dia, mr, ("%.1f" % mt) if mt < 1e8 else "kapalı", ok, bad))
                     if best is None or score > best[0]:
                         best = (score, P, ok, bad)
     print("EN İYİ:", best[1], "düzelt %.1f%% bozma %.2f%%" % (best[2], best[3]))
     P = best[1]
+    run(P, True, P['m_retro'] < 1e8, 'skip', dump=True)
+    print("--- KALAN HATALAR (doğru, yazılan, çıkan | cümle) ---")
+    for w, t, r, sent in FAILS[:60]:
+        print("  %s | %s -> %s | %s" % (w, t, r, sent[:90]))
     with open(os.path.join(out, "params.txt"), "w") as f:
         f.write("pen=%.3f\ndia=%.3f\nreal=%.3f\nretro=%.3f\n" % (P['pen'], P['dia'], P['m_real'], min(P['m_retro'], 99.0)))
+        f.write("wbi=%.3f\nwfour=%.3f\nwskip=%.3f\n" % (WT['bi'], WT['four'], WT['skip']))

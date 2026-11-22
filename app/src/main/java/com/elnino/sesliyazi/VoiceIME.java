@@ -160,6 +160,7 @@ public class VoiceIME extends InputMethodService {
     private boolean noFix = false;
     private volatile double diaPen = 0.03, realM = 0.8, retroM = 0.8;
     private int autoDel = 0;
+    private boolean afterApos = false;
     private String autoRestore = null, autoLearn = null;
     private String prev3 = "";
     private final java.util.LinkedList<String> recent = new java.util.LinkedList<String>();
@@ -326,13 +327,54 @@ public class VoiceIME extends InputMethodService {
                     vocab = v;
                     lmReady = true;
                     lmStatus = "";
-                    h.post(new Runnable() { @Override public void run() { updateSuggestions(); } });
+                    h.post(new Runnable() { @Override public void run() { purgeJunk(); updateSuggestions(); } });
                 } catch (Throwable t) {
                     lmStatus = "Model hatası: " + t.getClass().getSimpleName();
                     h.post(new Runnable() { @Override public void run() { updateSuggestions(); } });
                 }
             }
         }).start();
+    }
+
+    /** Önceki sürümlerde yanlış yazılıp öğrenilmiş, sözlükte olmayan ve az geçen kelimeleri siler. */
+    private void purgeJunk() {
+        java.util.Iterator<java.util.Map.Entry<String, Integer>> it = own.entrySet().iterator();
+        boolean changed = false;
+        while (it.hasNext()) {
+            java.util.Map.Entry<String, Integer> e = it.next();
+            Integer b = words.get(e.getKey());
+            if ((b == null || b == 0) && e.getValue() < 3) { it.remove(); changed = true; }
+        }
+        if (!changed) return;
+        for (java.util.Iterator<String> pi = pairs.keySet().iterator(); pi.hasNext();) {
+            String k = pi.next();
+            int g = k.indexOf('>');
+            if (!okWord(k.substring(0, g)) || !okWord(k.substring(g + 1))) pi.remove();
+        }
+        for (java.util.Iterator<String> ti = triples.keySet().iterator(); ti.hasNext();) {
+            String k = ti.next();
+            int g = k.indexOf('>');
+            String[] a = k.substring(0, g).split(" ");
+            boolean ok = okWord(k.substring(g + 1));
+            for (String x : a) ok = ok && okWord(x);
+            if (!ok) ti.remove();
+        }
+        ctxTot.clear();
+        for (java.util.Map.Entry<String, Integer> e : pairs.entrySet()) {
+            String k = e.getKey();
+            addTot(k.substring(0, k.indexOf('>')), e.getValue());
+        }
+        for (java.util.Map.Entry<String, Integer> e : triples.entrySet()) {
+            String k = e.getKey();
+            addTot(k.substring(0, k.indexOf('>')), e.getValue());
+        }
+        saveWords();
+    }
+
+    private boolean okWord(String w) {
+        if (w.equals("^")) return true;
+        Integer b = words.get(w);
+        return (b != null && b > 0) || own.containsKey(w);
     }
 
     private java.util.HashMap<String, String> readLm(String name) {
@@ -351,10 +393,21 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** Bir kelimeyi öğrenir; önceki kelimelerle bağlantısını da kaydeder. */
+    private final java.util.HashSet<String> pending = new java.util.HashSet<String>();
+
     private void learn(String w) {
         if (w == null) return;
         w = w.toLowerCase(TR);
         if (!isWord(w)) return;
+        if (lmReady && !isKnown(w)) {
+            // yazım hatası olabilir: ikinci kez yazılana kadar öğrenme, bağlamı da bozma
+            if (!pending.contains(w)) {
+                if (pending.size() > 400) pending.clear();
+                pending.add(w);
+                return;
+            }
+            pending.remove(w);
+        }
         Integer c = own.get(w);
         int nc = (c == null ? 0 : c) + 1;
         own.put(w, nc);
@@ -432,6 +485,7 @@ public class VoiceIME extends InputMethodService {
         int i = pos;
         while (i > 0 && Character.isLetter(b.charAt(i - 1))) i--;
         cur.append(b.substring(i, pos));
+        afterApos = cur.length() > 0 && i > 0 && (b.charAt(i - 1) == '\'' || b.charAt(i - 1) == '\u2019');
         pos = i;
         // önceki iki kelime (araya sadece boşluk girebilir; nokta/soru cümleyi bitirir)
         String[] got = new String[2];
@@ -512,6 +566,10 @@ public class VoiceIME extends InputMethodService {
 
     private void updateSuggestions() {
         if (sugg[0] == null) return;
+        if (afterApos) {
+            for (int i = 0; i < 3; i++) sugg[i].setText("");
+            return;
+        }
         String c1 = prev.length() > 0 ? prev : "^";
         String c2 = prev.length() > 0 ? (prev2.length() > 0 ? prev2 : "^") : "";
 
@@ -1003,11 +1061,23 @@ public class VoiceIME extends InputMethodService {
         ic.commitText(s, 1);
         leaveStatus();
         boolean letter = Character.isLetter(s.charAt(0));
+        boolean apos = s.equals("'") || s.equals("\u2019");
+        if (apos && cur.length() > 0) {
+            // özel isim + ek (Ahmet'e): isim bağlamda kalsın, ek öğrenilmesin/düzeltilmesin
+            prev3 = prev2;
+            prev2 = prev;
+            prev = cur.toString().toLowerCase(TR);
+            cur.setLength(0);
+            afterApos = true;
+            updateSuggestions();
+            return;
+        }
         if (letter) {
             cur.append(s);
             if (shift == 1) { shift = 0; refreshLabels(); }
         } else {
-            learn(cur.toString());
+            if (!afterApos) learn(cur.toString());
+            afterApos = false;
             cur.setLength(0);
             if (s.equals(".") || s.equals("?") || s.equals("!")) { prev = ""; prev2 = ""; }
             if ((s.equals(".") || s.equals("?") || s.equals("!")) && page == 0 && shift != 2) {
@@ -1025,6 +1095,14 @@ public class VoiceIME extends InputMethodService {
         autoRestore = null;
         autoLearn = null;
         autoDel = 0;
+        if (afterApos) {
+            ic.commitText(" ", 1);
+            afterApos = false;
+            cur.setLength(0);
+            leaveStatus();
+            updateSuggestions();
+            return;
+        }
         String wPrev = prev, wPrev2 = prev2, wPrev3 = prev3;
         String fix = fixCurrent();
         String finalWord;
@@ -1214,6 +1292,7 @@ public class VoiceIME extends InputMethodService {
         autoRestore = null;
         autoLearn = null;
         autoDel = 0;
+        afterApos = false;
         if (password) {
             stopAll();
             setStatus("Şifre kutusunda ses kapalı, elle yaz");
