@@ -1750,7 +1750,9 @@ public class VoiceIME extends InputMethodService {
         micBtn.addView(icon, new FrameLayout.LayoutParams(dp(46), dp(46)));
         micBtn.setOnTouchListener(new View.OnTouchListener() {
             @Override public boolean onTouch(View v, MotionEvent e) {
-                if (e.getAction() == MotionEvent.ACTION_DOWN) onMicTap();
+                if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                    try { onMicTap(); } catch (Throwable t) { reportErr(t); }
+                }
                 return true;
             }
         });
@@ -2512,15 +2514,18 @@ public class VoiceIME extends InputMethodService {
 
     private void onMicTap() {
         if (password) return;
-        if (listening || wanted) {
+        if (wanted) {
             // Durdur: o ana kadar söylenenler yazılır
             stopDictation();
         } else {
+            if (listening) finishMic();   // takılı kalmış eski dinleme varsa temizle
             begin();
         }
     }
 
     private void begin() {
+        stopTok++;
+        setStatus("Mikrofon açılıyor…");
         silenceRetries = 0;
         lastPartial = "";
         spokeOnce = false;
@@ -2719,6 +2724,7 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** Aynı tanıyıcıyla, ekranı değiştirmeden yeniden dinlemeye başlar. */
+    private int stopTok = 0;
     private long lastSpeechAt = 0;
     private boolean spokeOnce = false;
 
@@ -2739,16 +2745,15 @@ public class VoiceIME extends InputMethodService {
     /** Dokunarak veya sessizlik nedeniyle durdur: o ana kadar duyulanı yaz, sonra kapat. */
     private void stopDictation() {
         h.removeCallbacks(idleCheck);
-        if (!listening && !wanted) return;
         wanted = false;
-        final int mine = session;
+        final int tok = ++stopTok;
         if (recognizer != null) {
             try { recognizer.stopListening(); } catch (Exception ignored) { }
         }
         setStatus("Yazılıyor…");
         h.postDelayed(new Runnable() {
             @Override public void run() {
-                if (mine == session && listening) {
+                if (tok == stopTok && !wanted) {
                     if (lastPartial.length() > 0) { commitFinal(lastPartial); lastPartial = ""; }
                     finishMic();
                 }
