@@ -401,42 +401,48 @@ if len(sys.argv) > 3:
 
     # ---- (1) sonraki kelime (harf yazılmadan): 4'lü ve atlamalı modellerin katkısını ölç
     def nw_eval(n_sent):
-        hit = tot = 0
+        """ilk 3: yalnız n-gram; 4-10: n-gram + anlam ilişkisi. Dönüş: ilk3 %, ilk10 %"""
+        hit3 = hit10 = tot = 0
+        wa = WT.get('assoc', 0.0)
         for ws in TESTS[:n_sent]:
             toks = ["^"] + ws
             for i in range(1, len(toks)):
                 if toks[i] is None or any(t is None for t in toks[max(0, i - 3):i]):
                     continue
                 acc = ctx_list(toks[max(0, i - 3):i])
-                add_assoc(acc, [t for t in toks[1:i] if t], WT.get('assoc', 0.0))
-                top = [w for w, _ in sorted(acc.items(), key=lambda x: -x[1])[:3]]
+                top3 = [w for w, _ in sorted(acc.items(), key=lambda x: -x[1])[:3]]
+                acc2 = dict(acc)
+                add_assoc(acc2, [t for t in toks[1:i] if t], wa)
+                rest = [w for w, _ in sorted(acc2.items(), key=lambda x: -x[1])[:14] if w not in top3]
+                top10 = top3 + rest[:7]
                 tot += 1
-                hit += toks[i] in top
-        return 100.0 * hit / max(1, tot), tot
+                hit3 += toks[i] in top3
+                hit10 += toks[i] in top10
+        return 100.0 * hit3 / max(1, tot), tot, 100.0 * hit10 / max(1, tot)
 
     bestw = None
     for wb in (0.3, 0.6):
         for w4 in (0.0,):
             for wsk in (0.0,):
                 WT.update({'bi': wb, 'tri': 1.0, 'four': w4, 'skip': wsk})
-                r, n = nw_eval(3000)
+                r, n, _r10 = nw_eval(3000)
                 print("  sonraki kelime bi=%.2f dörtlü=%.1f atlamalı=%.2f -> %.1f%% (%d)" % (wb, w4, wsk, r, n))
                 if bestw is None or r > bestw[0]:
                     bestw = (r, wb, w4, wsk)
     WT.update({'bi': bestw[1], 'tri': 1.0, 'four': bestw[2], 'skip': bestw[3]})
-    r, n = nw_eval(6000)
+    r, n, _r10 = nw_eval(6000)
     print("SONRAKİ KELİME ilk3 isabet (en iyi bi=%.2f dörtlü=%.1f atlamalı=%.2f): %.1f%% (%d)" % (bestw[1], bestw[2], bestw[3], r, n))
 
     besta = None
-    for wa in (0.0, 0.003, 0.006, 0.012, 0.025, 0.05):
+    for wa in (0.0, 0.003, 0.006, 0.012, 0.025, 0.05, 0.1):
         WT['assoc'] = wa
-        r, n = nw_eval(3000)
-        print("  anlam ilişkisi ağırlığı %.3f -> sonraki kelime %.1f%%" % (wa, r))
-        if besta is None or r > besta[0]:
-            besta = (r, wa)
+        r3, n, r10 = nw_eval(3000)
+        print("  anlam ilişkisi ağırlığı %.3f -> ilk3 %.1f%%  ilk10 %.1f%%" % (wa, r3, r10))
+        if besta is None or r10 > besta[0]:
+            besta = (r10, wa)
     WT['assoc'] = besta[1]
-    r, n = nw_eval(6000)
-    print("ANLAM İLİŞKİSİ SEÇİLEN: ağırlık %.3f -> sonraki kelime ilk3 %.1f%%" % (besta[1], r))
+    r3, n, r10 = nw_eval(6000)
+    print("ANLAM İLİŞKİSİ SEÇİLEN: ağırlık %.3f -> ilk3 %.1f%%  ilk10 %.1f%%" % (besta[1], r3, r10))
 
     # ---- (2) gerçek yazım hatası düzeltme hattı: bilinmeyen kelime, bağlama uymayan geçerli kelime
     #          ve iki yanyana kelimeye bakarak geriye dönük düzeltme

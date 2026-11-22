@@ -657,7 +657,6 @@ public class VoiceIME extends InputMethodService {
         addSucc(lmBi.get(c1), 0.45, ctx);
         if (c2.length() > 0) addPersonal("", 5.0, ctx, triples, c2 + " " + c1);
         addPersonal("", 3.0, ctx, pairs, c1);
-        addAssoc(ctx);
 
         String[] out = new String[SN];
         java.util.Arrays.fill(out, "");
@@ -665,8 +664,29 @@ public class VoiceIME extends InputMethodService {
         java.util.Arrays.fill(sc, -1);
 
         if (cur.length() == 0) {
+            // ilk 3: yalnız cümle kalıbı (n-gram); 4-10: anlamca ilişkili kelimeler de katılır
+            String[] o3 = new String[3];
+            double[] s3 = new double[3];
+            java.util.Arrays.fill(o3, "");
+            java.util.Arrays.fill(s3, -1);
             for (java.util.Map.Entry<String, Double> e : ctx.entrySet())
+                rank(o3, s3, e.getKey(), e.getValue());
+            java.util.HashMap<String, Double> ctx2 = new java.util.HashMap<String, Double>(ctx);
+            addAssoc(ctx2);
+            for (java.util.Map.Entry<String, Double> e : ctx2.entrySet())
                 rank(out, sc, e.getKey(), e.getValue());
+            int pos = 0;
+            String[] merged = new String[SN];
+            java.util.Arrays.fill(merged, "");
+            for (String x : o3) if (x.length() > 0) merged[pos++] = x;
+            for (String x : out) {
+                if (pos >= SN) break;
+                if (x.length() == 0) continue;
+                boolean dup = false;
+                for (int i = 0; i < pos; i++) if (merged[i].equals(x)) { dup = true; break; }
+                if (!dup) merged[pos++] = x;
+            }
+            for (int i = 0; i < SN; i++) out[i] = merged[i];
             // boşlukları sık kullandığın kelimelerle doldur
             if (out[5].length() == 0) {
                 for (java.util.Map.Entry<String, Integer> e : own.entrySet())
