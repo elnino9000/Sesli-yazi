@@ -552,6 +552,46 @@ public class VoiceIME extends InputMethodService {
         return false;
     }
 
+    /** Öğrenilmiş bir kelimeyi (ve onunla ilgili tüm kalıpları, düzeltme anılarını) siler. */
+    private boolean forgetWord(String w) {
+        boolean hit = own.remove(w) != null;
+        for (java.util.Iterator<String> it = pairs.keySet().iterator(); it.hasNext();) {
+            String k = it.next();
+            int g = k.indexOf('>');
+            if (k.substring(0, g).equals(w) || k.substring(g + 1).equals(w)) { it.remove(); hit = true; }
+        }
+        for (java.util.Iterator<String> it = triples.keySet().iterator(); it.hasNext();) {
+            String k = it.next();
+            int g = k.indexOf('>');
+            boolean m = k.substring(g + 1).equals(w);
+            for (String x : k.substring(0, g).split(" ")) if (x.equals(w)) m = true;
+            if (m) { it.remove(); hit = true; }
+        }
+        for (java.util.Iterator<java.util.Map.Entry<String, String>> it = corrWord.entrySet().iterator(); it.hasNext();) {
+            java.util.Map.Entry<String, String> e = it.next();
+            if (e.getKey().equals(w) || e.getValue().equals(w)) { it.remove(); hit = true; }
+        }
+        for (java.util.Iterator<String> it = corrN.keySet().iterator(); it.hasNext();) {
+            String k = it.next();
+            int g = k.indexOf('>');
+            if (k.substring(0, g).equals(w) || k.substring(g + 1).equals(w)) it.remove();
+        }
+        recent.remove(w);
+        hist.remove(w);
+        pending.remove(w);
+        ctxTot.clear();
+        for (java.util.Map.Entry<String, Integer> e : pairs.entrySet()) {
+            String k = e.getKey();
+            addTot(k.substring(0, k.indexOf('>')), e.getValue());
+        }
+        for (java.util.Map.Entry<String, Integer> e : triples.entrySet()) {
+            String k = e.getKey();
+            addTot(k.substring(0, k.indexOf('>')), e.getValue());
+        }
+        if (hit) saveWords();
+        return hit;
+    }
+
     private void saveSoon() {
         if (++learnCount % 3 == 0) saveWords();
     }
@@ -1588,6 +1628,21 @@ public class VoiceIME extends InputMethodService {
             t.setPadding(dp(14), 0, dp(14), 0);
             t.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) { pickSuggestion(idx); }
+            });
+            t.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override public boolean onLongClick(View v) {
+                    String w = sugg[idx].getText().toString().toLowerCase(TR);
+                    if (w.length() == 0) return true;
+                    if (forgetWord(w)) {
+                        android.widget.Toast.makeText(VoiceIME.this, "Hafızadan silindi: " + w,
+                                android.widget.Toast.LENGTH_SHORT).show();
+                        updateSuggestions();
+                    } else {
+                        android.widget.Toast.makeText(VoiceIME.this, "Bu kelimeyi sen öğretmedin, silinecek bir şey yok",
+                                android.widget.Toast.LENGTH_SHORT).show();
+                    }
+                    return true;
+                }
             });
             sugg[i] = t;
             suggRow.addView(t, new LinearLayout.LayoutParams(
