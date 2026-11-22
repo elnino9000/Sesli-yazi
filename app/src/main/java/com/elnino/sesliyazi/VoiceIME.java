@@ -126,7 +126,7 @@ public class VoiceIME extends InputMethodService {
         {"z","x","c","v","b","n","m","ö","ç"}};
     private static final String[][] SYM = {
         {"1","2","3","4","5","6","7","8","9","0"},
-        {"-","/",":",";","(",")","₺","$","€","£"},
+        {"-","/",":",";","(",")","₺","$","€","£","="},
         {".",",","?","!","'","\"","%","+","&","@"}};
 
     // --- öneri sistemi: yerleşik kelimeler + senin yazdıkların
@@ -897,6 +897,17 @@ public class VoiceIME extends InputMethodService {
         return s;
     }
 
+    /** Yazılan harflerden kaç tanesi, kelimedeki harfle uyuşmuyor (dokunma izine göre). */
+    private int mism(String w, float[][] ll, int n) {
+        int m = 0;
+        int k = Math.min(n, w.length());
+        for (int i = 0; i < k; i++) {
+            int idx = L32.indexOf(w.charAt(i));
+            if (idx < 0 || ll[i][idx] < -1.0f) m++;
+        }
+        return m;
+    }
+
     private double priorOf(String w) {
         Integer c = words.get(w);
         double lc = c == null ? 0 : Math.log(1 + c);
@@ -967,6 +978,8 @@ public class VoiceIME extends InputMethodService {
         for (int b = 0; b < Math.min(bn, 20); b++) {
             String P = bp[b];
             if (P.length() != n) continue;
+            int mmP = mism(P, ll, n);
+            if (!full && mmP > (n + 2) / 4 + 0) continue;
             if (words.containsKey(P)) addCand(best, P, bs[b], n, ctx);
             if (!full) {
                 for (String w : rangeWords(P, 60)) addCand(best, w, bs[b], n, ctx);
@@ -978,7 +991,7 @@ public class VoiceIME extends InputMethodService {
             int lw = w.length();
             if (full ? lw != n : lw < n) continue;
             double t = touchOf(w, ll, n);
-            if (t < -9.0) continue;
+            if (t < -6.0 || mism(w, ll, n) > (n + 2) / 4) continue;
             addCand(best, w, t, n, ctx);
         }
         for (String w : ctx.keySet()) {
@@ -986,9 +999,12 @@ public class VoiceIME extends InputMethodService {
             if (full ? lw != n : lw < n) continue;
             if (!isKnown(w)) continue;
             double t = touchOf(w, ll, n);
-            if (t < -9.0) continue;
+            if (t < -6.0 || mism(w, ll, n) > (n + 2) / 4) continue;
             addCand(best, w, t, n, ctx);
         }
+
+        // 2a) tam yazdığın kelime sözlükteyse öne geçsin
+        if (!full && isKnown(p)) addCand(best, p, touchOf(p, ll, n) + 2.5, n, ctx);
 
         // 2b) daha önce bu yazımı düzelttiğin kelime
         String cw = corrWord.get(p);
@@ -1111,9 +1127,12 @@ public class VoiceIME extends InputMethodService {
             String lit = cur.toString();
             boolean has = false;
             for (int i = 0; i < SN; i++) if (out[i].equalsIgnoreCase(lit)) { has = true; break; }
-            if (!has && lit.length() >= 2) {
+            int hasAt = -1;
+            for (int i = 0; i < SN; i++) if (out[i].equalsIgnoreCase(lit)) { hasAt = i; break; }
+            if (lit.length() >= 2 && (hasAt < 0 || hasAt > 2)) {
                 int at = 2;
-                for (int i = SN - 1; i > at; i--) out[i] = out[i - 1];
+                int from = hasAt < 0 ? SN - 1 : hasAt;
+                for (int i = from; i > at; i--) out[i] = out[i - 1];
                 out[at] = lit;
             }
             if (out[0].length() == 0) out[0] = cur.toString();
