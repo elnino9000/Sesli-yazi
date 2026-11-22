@@ -1094,16 +1094,16 @@ public class VoiceIME extends InputMethodService {
                     if (nb != null) {
                         for (int k = 0; k < nb.length(); k++) {
                             String v = a.substring(0, i) + nb.charAt(k) + a.substring(i + 1);
-                            if (words.containsKey(v)) addCand(best, v, -(c1 + 2.4 + 1.0), v.length(), ctx);
+                            if (words.containsKey(v)) addCand(best, v, -(c1 + 2.4 + 2.5), v.length(), ctx);
                         }
                     }
                     if (m >= 5) {
                         String v = a.substring(0, i) + a.substring(i + 1);
-                        if (words.containsKey(v)) addCand(best, v, -(c1 + 2.5 + 1.0), v.length(), ctx);
+                        if (words.containsKey(v)) addCand(best, v, -(c1 + 2.5 + 2.5), v.length(), ctx);
                     }
                     if (i + 1 < m && a.charAt(i) != a.charAt(i + 1)) {
                         String v = a.substring(0, i) + a.charAt(i + 1) + a.charAt(i) + a.substring(i + 2);
-                        if (words.containsKey(v)) addCand(best, v, -(c1 + 1.8 + 1.0), v.length(), ctx);
+                        if (words.containsKey(v)) addCand(best, v, -(c1 + 1.8 + 2.5), v.length(), ctx);
                     }
                 }
             }
@@ -1498,7 +1498,7 @@ public class VoiceIME extends InputMethodService {
 
     /** Uzun, tanınmayan, yapışık diziyi kelimelere bölüp yerine yazar. after: kelimeden sonra gelecek karakter. */
     private boolean trySegment(InputConnection ic, String after) {
-        if (noFix || !lmReady || cur.length() < 8) return false;
+        if (noFix || !lmReady || cur.length() < 12) return false;
         String orig = cur.toString();
         String lo = orig.toLowerCase(TR);
         if (isKnown(lo) || hasPrefix(lo)) return false;   // gerçek bir kelimenin başıysa bölme
@@ -1541,7 +1541,7 @@ public class VoiceIME extends InputMethodService {
         Integer oc = own.get(p);
         if (oc != null && oc >= 2) return null;          // sen daha önce yazdın: dokunma
         Integer wc = words.get(p);
-        double need = tMu;
+        double need = Math.max(tMu, 2.0);
         if (known) {
             // doğru yazılmış olabilir: yalnızca çok güçlü kanıtta değiştir
             need = Math.max(tMk, (wc != null && wc >= 3000) ? 9.0 : 6.0);
