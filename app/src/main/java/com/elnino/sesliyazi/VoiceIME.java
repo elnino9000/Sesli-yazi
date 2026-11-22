@@ -1647,6 +1647,8 @@ public class VoiceIME extends InputMethodService {
     }
 
     private void begin() {
+        silenceRetries = 0;
+        lastPartial = "";
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             lastErr = "mikrofon izni yok";
@@ -1710,6 +1712,67 @@ public class VoiceIME extends InputMethodService {
         return i >= 0 ? p.substring(i + 1) : p;
     }
 
+
+    // --- konuşma tanıma iyileştirmeleri
+    private String lastPartial = "";
+    private int silenceRetries = 0;
+
+    private int unknownCount(String s) {
+        int n = 0;
+        for (String w : s.toLowerCase(TR).split("[^\\p{L}*]+")) {
+            if (w.length() < 2) continue;
+            if (w.indexOf('*') >= 0 || !isKnown(w)) n++;
+        }
+        return n;
+    }
+
+    /** Tanıyıcının verdiği alternatifler arasından, bilinmeyen kelimesi en az olanı seçer. */
+    private String pickBest(Bundle b) {
+        java.util.ArrayList<String> l = b == null ? null
+                : b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (l == null || l.isEmpty()) return null;
+        String best = l.get(0);
+        if (l.size() == 1 || !lmReady) return best;
+        int bu = unknownCount(best);
+        for (int i = 1; i < l.size() && bu > 0; i++) {
+            int u = unknownCount(l.get(i));
+            if (u < bu) { best = l.get(i); bu = u; }
+        }
+        return best;
+    }
+
+    /** Sansürlenmiş kelimeleri (s*** gibi) sözlükten en olası kelimeyle tamamlar. */
+    private String unmask(String s) {
+        if (s == null || s.indexOf('*') < 0 || !lmReady) return s;
+        StringBuilder out = new StringBuilder();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("[\\p{L}*]+").matcher(s);
+        int last = 0;
+        while (m.find()) {
+            out.append(s, last, m.start());
+            last = m.end();
+            String t = m.group();
+            if (t.indexOf('*') < 0 || t.replace("*", "").length() == 0) { out.append(t); continue; }
+            String low = t.toLowerCase(TR);
+            String best = null;
+            int bc = -1;
+            for (java.util.Map.Entry<String, Integer> e : words.entrySet()) {
+                String w = e.getKey();
+                if (w.length() != low.length()) continue;
+                boolean ok = true;
+                for (int i = 0; i < w.length(); i++) {
+                    char c = low.charAt(i);
+                    if (c != '*' && c != w.charAt(i)) { ok = false; break; }
+                }
+                if (ok && e.getValue() > bc) { bc = e.getValue(); best = w; }
+            }
+            if (best == null) { out.append(t); continue; }
+            if (Character.isUpperCase(t.charAt(0))) best = best.substring(0, 1).toUpperCase(TR) + best.substring(1);
+            out.append(best);
+        }
+        out.append(s.substring(last));
+        return out.toString();
+    }
+
     private void startRecognizer() {
         if (getCurrentInputConnection() == null) {
             wanted = false;
@@ -1738,12 +1801,15 @@ public class VoiceIME extends InputMethodService {
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        intent.putExtra("android.speech.extra.MASK_OFFENSIVE_WORDS", false);
+        intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
         intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L);
         intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L);
 
         listening = true;
+        lastPartial = "";
         paintMic(true);
         startPulse();
         setStatus("Dinliyorum… konuş");
@@ -1816,17 +1882,21 @@ public class VoiceIME extends InputMethodService {
         public void onPartialResults(Bundle partialResults) {
             if (mySession != session) return;
             String s = first(partialResults);
-            if (s != null) setPartial(s);
+            if (s != null) { setPartial(s); lastPartial = s; }
         }
 
         @Override
         public void onResults(Bundle results) {
             if (mySession != session) return;
-            String s = first(results);
+            String s = pickBest(results);
+            if (s == null) s = first(results);
+            if (s == null && lastPartial.length() > 0) s = lastPartial;
             if (s != null) {
                 commitFinal(s);
                 rememberGood();
+                silenceRetries = 0;
             }
+            lastPartial = "";
             lastErr = "-";
             updateDiag();
             setPartial("");
@@ -1840,7 +1910,7 @@ public class VoiceIME extends InputMethodService {
                     @Override public void run() {
                         if (wanted && !listening && mySession == session) startRecognizer();
                     }
-                }, 250);
+                }, 120);
             } else {
                 setStatus("Konuşmak için mikrofona dokun");
             }
@@ -1862,6 +1932,14 @@ public class VoiceIME extends InputMethodService {
 
     private void handleError(int error, int mySession) {
         if (mySession != session) return;
+        // hata gelse bile o ana kadar duyulan yarım cümleyi kaybetme
+        boolean salvaged = false;
+        if (lastPartial.length() > 0 && error != SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+            commitFinal(lastPartial);
+            lastPartial = "";
+            salvaged = true;
+            silenceRetries = 0;
+        }
         lastErr = errName(error);
         listening = false;
         stopPulse();
@@ -1869,6 +1947,18 @@ public class VoiceIME extends InputMethodService {
         destroyRecognizer();
         setPartial("");
 
+        // sessizlik / anlaşılmadı: mikrofon açıkken birkaç kez daha dinle
+        boolean quiet = error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH;
+        if (wanted && quiet && (salvaged || silenceRetries < 3)) {
+            if (!salvaged) silenceRetries++;
+            setStatus("Dinliyorum… konuş");
+            h.postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (wanted && !listening) startRecognizer();
+                }
+            }, 150);
+            return;
+        }
         // Tanıyıcı bozuksa sıradakini dene
         boolean switchable = error == 4 || error == 5 || error == 10 || error == 11
                 || error == 12 || error == 13;
@@ -1952,7 +2042,7 @@ public class VoiceIME extends InputMethodService {
             setStatus("Yazı kutusu bulunamadı");
             return;
         }
-        String sp = spoken.trim();
+        String sp = unmask(spoken).trim();
         if (sp.isEmpty()) return;
 
         CharSequence before = ic.getTextBeforeCursor(3, 0);
