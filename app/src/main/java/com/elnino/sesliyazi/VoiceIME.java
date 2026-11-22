@@ -2588,7 +2588,7 @@ public class VoiceIME extends InputMethodService {
         String r = sp;
         for (String[] pr : SPOKEN) {
             r = java.util.regex.Pattern.compile(pr[0], java.util.regex.Pattern.CASE_INSENSITIVE
-                    | java.util.regex.Pattern.UNICODE_CASE).matcher(r).replaceAll(java.util.regex.Matcher.quoteReplacement(pr[1]));
+                    | java.util.regex.Pattern.UNICODE_CASE | java.util.regex.Pattern.UNICODE_CHARACTER_CLASS).matcher(r).replaceAll(java.util.regex.Matcher.quoteReplacement(pr[1]));
         }
         return r.trim();
     }
