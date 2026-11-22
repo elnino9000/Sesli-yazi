@@ -544,6 +544,15 @@ if len(sys.argv) > 3:
 
     # ------------------------------------------------------------ ağır yazım hatası (6-7 harf yanlış)
     DIAP = {'c': 'ç', 'g': 'ğ', 'i': 'ı', 'o': 'ö', 's': 'ş', 'u': 'ü'}
+    POS = {}
+    for _ri, _row in enumerate(ROWS):
+        for _ci, _ch in enumerate(_row):
+            POS[_ch] = (_ci + (0.0, 0.5, 1.0)[_ri], _ri)
+    VOW = "aeıioöuü"
+    def kdist(a, b):
+        if a not in POS or b not in POS:
+            return 99.0
+        return math.hypot(POS[a][0] - POS[b][0], POS[a][1] - POS[b][1])
     def sub_cost(a, b):
         if a == b:
             return 0
@@ -551,6 +560,10 @@ if len(sys.argv) > 3:
             return 40
         if DIAP.get(a) == b or DIAP.get(b) == a:
             return 15
+        if a in VOW and b in VOW:
+            return 65
+        if kdist(a, b) <= 2.3:
+            return 70
         return 100
     def wdist(t, w, limit):
         n, m = len(t), len(w)
@@ -580,8 +593,13 @@ if len(sys.argv) > 3:
         out_c = []
         for ch in w:
             r = rnd.random()
-            if r < q * 0.7 and ch in NB:
+            if r < q * 0.5 and ch in NB:
                 out_c.append(rnd.choice(sorted(NB[ch])))
+            elif r < q * 0.65 and ch in POS:
+                near = [x for x in POS if x != ch and kdist(ch, x) <= 2.3]
+                out_c.append(rnd.choice(sorted(near)) if near else ch)
+            elif r < q * 0.75 and ch in VOW:
+                out_c.append(rnd.choice("aeıioöuü"))
             elif r < q:
                 out_c.append(rnd.choice(LETTERS))
             elif r < q + 0.04:

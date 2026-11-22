@@ -35,6 +35,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -327,7 +328,7 @@ public class VoiceIME extends InputMethodService {
                     topPrefix = tpa;
                     java.util.ArrayList<String> fl = new java.util.ArrayList<String>();
                     for (String x : byCount) {
-                        if (x.length() >= 3 && fl.size() < 80000) fl.add(x);
+                        if (x.length() >= 3 && fl.size() < 120000) fl.add(x);
                     }
                     freqWords = fl.toArray(new String[0]);
                     String[] v = w.keySet().toArray(new String[0]);
@@ -833,6 +834,16 @@ public class VoiceIME extends InputMethodService {
 
     // ---------------------------------------------------------- ağır hata: bulanık eşleştirme
 
+    private static final java.util.HashMap<Character, float[]> POS = new java.util.HashMap<Character, float[]>();
+    static {
+        String[] rows = {"qwertyuıopğü", "asdfghjklşi", "zxcvbnmöç"};
+        float[] off = {0f, 0.5f, 1.0f};
+        for (int r = 0; r < rows.length; r++)
+            for (int c = 0; c < rows[r].length(); c++)
+                POS.put(rows[r].charAt(c), new float[]{c + off[r], r});
+    }
+    private static final String VOW = "aeıioöuü";
+
     private int subCost(char a, char b) {
         if (a == b) return 0;
         String nb = NB.get(a);
@@ -841,6 +852,12 @@ public class VoiceIME extends InputMethodService {
         if (da != null && da == b) return 15;
         da = DIA.get(b);
         if (da != null && da == a) return 15;
+        if (VOW.indexOf(a) >= 0 && VOW.indexOf(b) >= 0) return 65;
+        float[] pa = POS.get(a), pb = POS.get(b);
+        if (pa != null && pb != null) {
+            float dx = pa[0] - pb[0], dy = pa[1] - pb[1];
+            if (dx * dx + dy * dy <= 5.29f) return 70;
+        }
         return 100;
     }
 
@@ -1042,6 +1059,116 @@ public class VoiceIME extends InputMethodService {
         return root;
     }
 
+
+    // --- emoji paneli
+    private static final String[] EMO_TAB = {"🕘", "😀", "👍", "💙", "🐱", "🍕", "⚽", "💡"};
+    private static final String[] EMO = {
+        "",
+        "😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😗 😙 😚 😋 😛 😜 🤪 😝 🤑 🤗 🤭 🤫 🤔 🤐 🤨 😐 😑 😶 😏 😒 🙄 😬 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 👿 💀 💩 🤡 👻 😴 🤤 😷 🤒 🤕 🤢 🤮 🥵 🥶 😵 🤯 🤠 🥳 😎 🤓 🧐",
+        "👍 👎 👌 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ✋ 🤚 👋 👏 🙌 👐 🤲 🙏 🤝 💪 💅 👀 👅 👄 🧠 👶 👦 👧 👨 👩 👴 👵 🙋 🤷 🤦 🙆 🙅 💁 🙇 🚶 🏃 💃 🕺 👪 💑 💏",
+        "\u2764\uFE0F 💙 💚 💛 🧡 💜 🖤 🤍 🤎 💔 💕 💞 💓 💗 💖 💘 💝 💯 💢 💥 💫 💦 💨 🔥 ⭐ 🌟 ✨ ⚡ ✅ ❌ ❓ ❗ ⭕ 🔴 🟠 🟡 🟢 🔵 🟣 ⚫ ⚪ 🔔 🎵 🎶 🆗 🆕 🔝",
+        "🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐔 🐧 🐦 🐤 🦆 🦅 🦉 🦇 🐺 🐴 🦄 🐝 🐛 🦋 🐌 🐞 🐜 🐢 🐍 🦎 🐙 🦑 🦐 🦀 🐠 🐟 🐬 🐳 🦈 🐊 🐘 🦒 🐪 🌳 🌲 🌴 🌵 🌷 🌹 🌺 🌻 🌼 🍀 🍁 🍂 🍃 🌈 🌞 🌙 🌊",
+        "🍏 🍎 🍐 🍊 🍋 🍌 🍉 🍇 🍓 🍒 🍑 🥭 🍍 🥥 🥝 🍅 🥑 🍆 🥔 🥕 🌽 🥒 🥦 🍄 🥜 🍞 🥐 🥖 🧀 🍳 🥞 🥓 🥩 🍗 🍖 🌭 🍔 🍟 🍕 🥪 🌮 🌯 🥗 🍝 🍜 🍲 🍛 🍣 🍱 🍤 🍙 🍚 🍦 🍧 🍨 🍩 🍪 🎂 🍰 🧁 🍫 🍬 🍭 🍮 🍯 ☕ 🍵 🥛 🍺 🍻 🥂 🍷 🥃 🍹",
+        "⚽ 🏀 🏈 ⚾ 🎾 🏐 🏉 🎱 🏓 🏸 🥊 🥋 ⛳ 🎯 🎮 🎲 🎭 🎨 🎤 🎧 🎸 🎹 🥁 🎬 🏆 🥇 🥈 🥉 🚗 🚕 🚙 🚌 🚓 🚑 🚒 🚚 🚜 🚲 🚀 🚁 🚢 🚂 🏠 🏢 🕌 🌍 ⛺ 🏖 🌅 🎉 🎊 🎁 🎈",
+        "⌚ 📱 💻 📷 📹 📺 📻 ⏰ ⏳ 💡 🔦 💰 💵 💳 💎 🔧 🔨 🔑 🔒 🔓 📌 📎 📝 📖 📚 📅 📞 📧 📨 📦 🛒 🚪 🛏 🚿 💊 💉 🩺 🕋 🧴 🧼 🪑 🚽 🔋 🔌 📡 🧭"
+    };
+    private int emoCat = 1;
+
+    private java.util.List<String> recentEmojis() {
+        String r = getSharedPreferences("sesli", MODE_PRIVATE).getString("emo", "");
+        java.util.ArrayList<String> l = new java.util.ArrayList<String>();
+        for (String x : r.split(" ")) if (x.length() > 0) l.add(x);
+        return l;
+    }
+
+    private void rememberEmoji(String e) {
+        java.util.List<String> l = recentEmojis();
+        l.remove(e);
+        l.add(0, e);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < l.size() && i < 32; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(l.get(i));
+        }
+        getSharedPreferences("sesli", MODE_PRIVATE).edit().putString("emo", sb.toString()).apply();
+    }
+
+    private void typeEmoji(String e) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        markOwn();
+        if (cur.length() > 0) {
+            learn(cur.toString());
+            cur.setLength(0);
+        }
+        ic.commitText(e, 1);
+        rememberEmoji(e);
+    }
+
+    private void buildEmoji() {
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        keysBox.addView(tabs, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        for (int i = 0; i < EMO_TAB.length; i++) {
+            final int idx = i;
+            TextView t = mkKey(EMO_TAB[i], 1f, idx == emoCat, new Runnable() {
+                @Override public void run() { emoCat = idx; buildKeys(); }
+            }, false);
+            t.setTextSize(19);
+            tabs.addView(t);
+        }
+        java.util.List<String> list;
+        if (emoCat == 0) list = recentEmojis();
+        else list = java.util.Arrays.asList(EMO[emoCat].split(" "));
+        ScrollView sv = new ScrollView(this);
+        sv.setVerticalScrollBarEnabled(false);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        sv.addView(col, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        int per = 8;
+        if (list.isEmpty()) {
+            TextView hint = label(16, Color.parseColor("#AEAEB2"));
+            hint.setText("Henüz yok. Kullandığın emojiler burada çıkar.");
+            hint.setGravity(Gravity.CENTER);
+            hint.setPadding(0, dp(40), 0, 0);
+            col.addView(hint);
+        }
+        for (int i = 0; i < list.size(); i += per) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int j = 0; j < per; j++) {
+                TextView e = new TextView(this);
+                e.setGravity(Gravity.CENTER);
+                e.setTextSize(25);
+                if (i + j < list.size()) {
+                    final String em = list.get(i + j);
+                    e.setText(em);
+                    e.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) { typeEmoji(em); }
+                    });
+                }
+                row.addView(e, new LinearLayout.LayoutParams(0, dp(46), 1f));
+            }
+            col.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+        }
+        keysBox.addView(sv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
+
+        LinearLayout b = newRow();
+        b.addView(mkKey("ABC", 1.6f, true, new Runnable() {
+            @Override public void run() { page = 0; buildKeys(); }
+        }, false));
+        b.addView(mkKey("Türkçe", 5f, false, new Runnable() {
+            @Override public void run() { doSpace(); }
+        }, false));
+        b.addView(mkKey("⌫", 1.6f, true, new Runnable() {
+            @Override public void run() { doDelete(); }
+        }, true));
+    }
+
     /** Dokunma anında çalışan tuş: hızlı ve kaçırmaz (aralarda ölü boşluk yok). */
     private TextView mkKey(String text, float weight, boolean func, final Runnable action,
                            final boolean repeat) {
@@ -1113,6 +1240,7 @@ public class VoiceIME extends InputMethodService {
         letterViews.clear();
         letterBase.clear();
         shiftKey = null;
+        if (page == 2) { buildEmoji(); return; }
         String[][] rows = page == 0 ? LET : SYM;
 
         for (int i = 0; i < 3; i++) {
@@ -1159,10 +1287,13 @@ public class VoiceIME extends InputMethodService {
                 imm.showInputMethodPicker();
             }
         }, false));
+        b.addView(mkKey("😀", 1.1f, true, new Runnable() {
+            @Override public void run() { page = 2; buildKeys(); }
+        }, false));
         b.addView(mkKey(",", 1f, false, new Runnable() {
             @Override public void run() { typeKey(","); }
         }, false));
-        b.addView(mkKey("Türkçe", 4f, false, new Runnable() {
+        b.addView(mkKey("Türkçe", 3f, false, new Runnable() {
             @Override public void run() { doSpace(); }
         }, false));
         b.addView(mkKey(".", 1f, false, new Runnable() {
