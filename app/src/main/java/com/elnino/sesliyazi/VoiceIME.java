@@ -618,6 +618,8 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** İmleçten önceki yazıdan o anki kelimeyi ve önceki iki kelimeyi okur. */
+    private boolean sliding = false;
+
     private void syncFromText() {
         InputConnection ic = getCurrentInputConnection();
         cur.setLength(0);
@@ -625,6 +627,24 @@ public class VoiceIME extends InputMethodService {
         prev2 = "";
         prev3 = "";
         if (ic == null) return;
+        if (!sliding) {
+            // imleç bir kelimenin ortasındaysa: kelimenin tamamı seçilmiş say, imleci kelime sonuna al
+            CharSequence ch = ic.getTextBeforeCursor(1, 0);
+            CharSequence ta = ic.getTextAfterCursor(40, 0);
+            if (ch != null && ch.length() == 1 && Character.isLetter(ch.charAt(0)) && ta != null) {
+                String t = ta.toString();
+                int tl = 0;
+                while (tl < t.length() && Character.isLetter(t.charAt(tl))) tl++;
+                if (tl > 0 && tl < 40) {
+                    markOwn();
+                    String tail = t.substring(0, tl);
+                    ic.beginBatchEdit();
+                    ic.deleteSurroundingText(0, tl);
+                    ic.commitText(tail, 1);
+                    ic.endBatchEdit();
+                }
+            }
+        }
         CharSequence cs = ic.getTextBeforeCursor(80, 0);
         if (cs == null) return;
         String b = cs.toString();
@@ -2066,6 +2086,7 @@ public class VoiceIME extends InputMethodService {
                         if (!moved && Math.abs(e.getRawX() - startX) < dp(10)) return true;
                         while (Math.abs(dx) >= step) {
                             moved = true;
+                            sliding = true;
                             int code = dx > 0 ? KeyEvent.KEYCODE_DPAD_RIGHT : KeyEvent.KEYCODE_DPAD_LEFT;
                             markOwn();
                             sendDownUpKeyEvents(code);
@@ -2076,6 +2097,7 @@ public class VoiceIME extends InputMethodService {
                     }
                     case MotionEvent.ACTION_UP:
                         v.setAlpha(1f);
+                        sliding = false;
                         if (moved) {
                             cur.setLength(0);
                             taps.clear();
@@ -2092,6 +2114,7 @@ public class VoiceIME extends InputMethodService {
                         }
                         return true;
                     case MotionEvent.ACTION_CANCEL:
+                        sliding = false;
                         v.setAlpha(1f);
                         return true;
                     default:
