@@ -130,9 +130,9 @@ uni = uni2
 for w in list(NORM):
     NORM[w] = resolve(w)
 
-vocab_list = [(w, c) for w, c in uni.items() if c >= 5 and ok(w)]
+vocab_list = [(w, c) for w, c in uni.items() if c >= 4 and ok(w)]
 vocab_list.sort(key=lambda x: -x[1])
-vocab_all = vocab_list[:250000]
+vocab_all = vocab_list[:330000]
 vocab_list = vocab_list[:100000]
 vocab = set(w for w, _ in vocab_list)
 with open(os.path.join(out, "words_tr.txt"), "w", encoding="utf-8") as f:

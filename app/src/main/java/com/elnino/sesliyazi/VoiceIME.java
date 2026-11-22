@@ -657,8 +657,8 @@ public class VoiceIME extends InputMethodService {
                 }
             }
             // çok harfi yanlış basılmışsa (hiçbir kelime bu önekle başlamıyorsa) bulanık eşleştir
-            if (!prefixHit && p.length() >= 4 && !noFix) {
-                for (Object[] f : fuzzyRank(p, ctx)) {
+            if (p.length() >= 4 && !noFix && lmReady) {
+                for (Object[] f : fuzzyRank(p, ctx, true)) {
                     consider(best, (String) f[0], ((Integer) f[2]) / 100.0 * fzk, ctx);
                 }
             }
@@ -862,7 +862,9 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** Klavye komşuluğuna duyarlı düzenleme uzaklığı (yer değiştirme dahil); 100 = bir harf. */
-    private int wdist(String t, String w, int limit) {
+    private int wdist(String t, String w, int limit) { return wdist(t, w, limit, false); }
+
+    private int wdist(String t, String w, int limit, boolean prefix) {
         int n = t.length(), m = w.length();
         if (m > 40 || n > 40) return 1000000;
         int[] p2 = dA, p1 = dB, cu = dC;
@@ -887,11 +889,23 @@ public class VoiceIME extends InputMethodService {
             if (rm > limit) return 1000000;
             int[] tmp = p2; p2 = p1; p1 = cu; cu = tmp;
         }
+        if (prefix && m >= n - 2) {
+            int best = 1000000;
+            for (int j = Math.max(1, n - 2); j <= m; j++) {
+                int v = p1[j] + 12 * (m - j);
+                if (v < best) best = v;
+            }
+            return best;
+        }
         return p1[m];
     }
 
     /** Çok harfi yanlış kelime için en iyi adaylar: {kelime, puan, uzaklık}, puanı büyükten küçüğe. */
     private java.util.List<Object[]> fuzzyRank(String g, java.util.HashMap<String, Double> ctx) {
+        return fuzzyRank(g, ctx, false);
+    }
+
+    private java.util.List<Object[]> fuzzyRank(String g, java.util.HashMap<String, Double> ctx, boolean prefix) {
         java.util.ArrayList<Object[]> top = new java.util.ArrayList<Object[]>();
         int cl = g.length();
         if (!lmReady || cl < 4 || cl > 14) return top;
@@ -910,7 +924,7 @@ public class VoiceIME extends InputMethodService {
                 if (pass == 2) {
                     if (Math.abs(lx - cl) > 4 || !isKnown(x)) continue;
                 } else {
-                    if (Math.abs(lx - cl) > 3) continue;
+                    if (prefix ? (lx < cl - 3 || lx > cl + 8) : Math.abs(lx - cl) > 3) continue;
                     char f = x.charAt(0);
                     boolean okf = f == c0 || (nb != null && nb.indexOf(f) >= 0) || (dc != null && dc == f);
                     if (!okf) {
@@ -921,7 +935,7 @@ public class VoiceIME extends InputMethodService {
                 }
                 if (pass > 0 && !seen.add(x)) continue;
                 if (pass == 0) seen.add(x);
-                int d = wdist(g, x, (pass == 2 ? 80 : 65) * cl);
+                int d = wdist(g, x, (pass == 2 ? 80 : 65) * cl, prefix);
                 if (d >= 1000000) continue;
                 Double cx = ctx.get(x);
                 double c = cx == null ? 0 : cx;

@@ -30,10 +30,17 @@ jobs:
             | bzcat | cut -f3 > work/tatoeba.txt || true
           timeout 600 curl -fsSL https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/tr.txt.gz \
             | gunzip -c | head -n 20000000 > work/subs.txt || true
-          wc -l work/tatoeba.txt work/subs.txt || true
+          : > work/extra.txt
+          for u in OPUS-wikipedia/v1.0 OPUS-TED2020/v1 OPUS-QED/v2.0a OPUS-Tanzil/v1 OPUS-GNOME/v1 OPUS-Ubuntu/v14.10 OPUS-bible-uedin/v1 OPUS-News-Commentary/v16 OPUS-Europarl/v8; do
+            timeout 400 curl -fsSL "https://object.pouta.csc.fi/$u/mono/tr.txt.gz" | gunzip -c | head -n 4000000 > work/e1.txt || true
+            echo "$u: $(wc -l < work/e1.txt) satır"
+            cat work/e1.txt >> work/extra.txt
+          done
+          rm -f work/e1.txt
+          wc -l work/tatoeba.txt work/subs.txt work/extra.txt || true
           tail -n 30000 work/subs.txt > work/test.txt || true
           head -n -30000 work/subs.txt > work/subs_train.txt || true
-          cat work/tatoeba.txt work/subs_train.txt > work/corpus.txt 2>/dev/null || true
+          cat work/tatoeba.txt work/extra.txt work/subs_train.txt > work/corpus.txt 2>/dev/null || true
           if [ "$(wc -l < work/corpus.txt)" -gt 1000 ]; then
             python3 scripts/build_lm.py work/corpus.txt app/src/main/assets work/test.txt
           else
