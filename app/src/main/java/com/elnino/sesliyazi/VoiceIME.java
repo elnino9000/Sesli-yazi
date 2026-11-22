@@ -1094,7 +1094,7 @@ public class VoiceIME extends InputMethodService {
         if (start && shift == 0) { shift = 1; refreshLabels(); }
     }
 
-    private void updateSuggestions() {
+    private void updateSuggestions0() {
         if (cur.length() == 0) autoCaps();
         if (sugg[0] == null) return;
         if (afterApos) {
@@ -1635,7 +1635,7 @@ public class VoiceIME extends InputMethodService {
         }
     }
 
-    private void pickSuggestion(int i) {
+    private void pickSuggestion0(int i) {
         String w = sugg[i].getText().toString();
         if (w.length() == 0) return;
         InputConnection ic = getCurrentInputConnection();
@@ -2120,7 +2120,7 @@ public class VoiceIME extends InputMethodService {
         }
     }
 
-    private void typeKey(String s) {
+    private void typeKey0(String s) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
         markOwn();
@@ -2189,7 +2189,7 @@ public class VoiceIME extends InputMethodService {
         updateSuggestions();
     }
 
-    private void doSpace() {
+    private void doSpace0() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
         markOwn();
@@ -2275,7 +2275,7 @@ public class VoiceIME extends InputMethodService {
         updateSuggestions();
     }
 
-    private void doDelete() {
+    private void doDelete0() {
         markOwn();
         InputConnection ic = getCurrentInputConnection();
         if (autoRestore != null && autoDel > 0 && ic != null) {
@@ -2414,9 +2414,7 @@ public class VoiceIME extends InputMethodService {
     }
 
     // ======================================================== klavye yaşamı
-
-    @Override
-    public void onStartInputView(EditorInfo info, boolean restarting) {
+    private void onStartInputView0(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         h.removeCallbacks(autoStart);
         if (importChanged()) loadPersonal();
@@ -3084,7 +3082,7 @@ public class VoiceIME extends InputMethodService {
     // ========================================================== yazı yazma
 
     /** Kesinleşen cümleyi yazı kutusuna yazar (baş harf ve boşluk ayarıyla). */
-    private void commitFinal(String spoken) {
+    private void commitFinal0(String spoken) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) {
             setStatus("Yazı kutusu bulunamadı");
@@ -3146,5 +3144,47 @@ public class VoiceIME extends InputMethodService {
     private void commitRaw(String s) {
         InputConnection ic = getCurrentInputConnection();
         if (ic != null) ic.commitText(s, 1);
+    }
+
+    private void typeKey(String s) {
+        try { typeKey0(s); } catch (Throwable t) { reportErr(t); }
+    }
+
+    private void doSpace() {
+        try { doSpace0(); } catch (Throwable t) { reportErr(t); }
+    }
+
+    private void doDelete() {
+        try { doDelete0(); } catch (Throwable t) { reportErr(t); }
+    }
+
+    private void updateSuggestions() {
+        try { updateSuggestions0(); } catch (Throwable t) { reportErr(t); }
+    }
+
+    private void commitFinal(String spoken) {
+        try { commitFinal0(spoken); } catch (Throwable t) { reportErr(t); }
+    }
+
+    private void pickSuggestion(int i) {
+        try { pickSuggestion0(i); } catch (Throwable t) { reportErr(t); }
+    }
+
+    @Override
+    public void onStartInputView(EditorInfo info, boolean restarting) {
+        try { onStartInputView0(info, restarting); } catch (Throwable t) { reportErr(t); }
+    }
+
+    private void reportErr(Throwable t) {
+        try {
+            StringBuilder sb = new StringBuilder(t.getClass().getSimpleName());
+            if (t.getMessage() != null) sb.append(": ").append(t.getMessage());
+            for (StackTraceElement e : t.getStackTrace()) {
+                if (e.getClassName().contains("sesliyazi")) { sb.append(" @").append(e.getMethodName()).append(":").append(e.getLineNumber()); break; }
+            }
+            String m = sb.toString();
+            getSharedPreferences("sesli", MODE_PRIVATE).edit().putString("lasterr", m).apply();
+            setStatus("Hata: " + m);
+        } catch (Throwable ignored) { }
     }
 }
