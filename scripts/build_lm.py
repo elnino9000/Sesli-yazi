@@ -243,8 +243,8 @@ def build_assoc():
     print("anlam ilişkisi kelimesi:", rows)
 
 build_assoc()
-build(bi_path, "lm_bi.txt", 2, 8, 5, 60000)
-build(tri_path, "lm_tri.txt", 2, 5, 4, 140000)
+build(bi_path, "lm_bi.txt", 2, 16, 5, 60000)
+build(tri_path, "lm_tri.txt", 2, 10, 4, 140000)
 
 # ---------------------------------------------------------------- ölçüm ve ayar
 # Eğitimde kullanılmayan cümlelerde (1) sonraki kelime, (2) yanlış basılan harflerden

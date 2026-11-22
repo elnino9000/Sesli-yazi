@@ -31,12 +31,16 @@ jobs:
           timeout 600 curl -fsSL https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/tr.txt.gz \
             | gunzip -c | head -n 20000000 > work/subs.txt || true
           : > work/extra.txt
-          for u in OPUS-wikipedia/v1.0 OPUS-TED2020/v1 OPUS-QED/v2.0a OPUS-Tanzil/v1 OPUS-GNOME/v1 OPUS-Ubuntu/v14.10 OPUS-bible-uedin/v1 OPUS-News-Commentary/v16 OPUS-Europarl/v8; do
+          for u in OPUS-Wikipedia/v1.0 OPUS-wikimedia/v20230407 OPUS-Wikibooks/v1 OPUS-Wikiquote/v1 OPUS-WikiSource/v1 OPUS-bianet/v1 OPUS-TED2020/v1 OPUS-QED/v2.0a OPUS-Tanzil/v1 OPUS-GNOME/v1 OPUS-Ubuntu/v14.10 OPUS-bible-uedin/v1 OPUS-News-Commentary/v16 OPUS-Europarl/v8; do
             timeout 400 curl -fsSL "https://object.pouta.csc.fi/$u/mono/tr.txt.gz" | gunzip -c | head -n 4000000 > work/e1.txt || true
             echo "$u: $(wc -l < work/e1.txt) satır"
             cat work/e1.txt >> work/extra.txt
           done
           rm -f work/e1.txt
+          timeout 900 curl -fsSL https://data.statmt.org/cc-100/tr.txt.xz | xz -dc | head -n 2500000 | awk 'length($0) > 15 && length($0) < 400' > work/cc.txt || true
+          echo "cc-100: $(wc -l < work/cc.txt) satır"
+          cat work/cc.txt >> work/extra.txt
+          rm -f work/cc.txt
           wc -l work/tatoeba.txt work/subs.txt work/extra.txt || true
           tail -n 30000 work/subs.txt > work/test.txt || true
           head -n -30000 work/subs.txt > work/subs_train.txt || true

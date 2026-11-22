@@ -475,13 +475,12 @@ public class VoiceIME extends InputMethodService {
         w = w.toLowerCase(TR);
         if (!isWord(w)) return;
         if (lmReady && !isKnown(w)) {
-            // yazım hatası olabilir: ikinci kez yazılana kadar öğrenme, bağlamı da bozma
-            if (!pending.contains(w)) {
-                if (pending.size() > 400) pending.clear();
-                pending.add(w);
-                return;
-            }
-            pending.remove(w);
+            // bilmediğim kelime: hemen kelime hafızasına al (bağlam kalıplarına ikinci kez yazılınca girer,
+            // böylece yazım hataları cümle bağlamını bozmaz)
+            own.put(w, 1);
+            if (ownMax < 1) ownMax = 1;
+            saveSoon();
+            return;
         }
         Integer c = own.get(w);
         int nc = (c == null ? 0 : c) + 1;
@@ -551,6 +550,10 @@ public class VoiceIME extends InputMethodService {
             return true;
         }
         return false;
+    }
+
+    private void saveSoon() {
+        if (++learnCount % 3 == 0) saveWords();
     }
 
     private void saveWords() {
@@ -858,7 +861,7 @@ public class VoiceIME extends InputMethodService {
         Integer c = words.get(w);
         double lc = c == null ? 0 : Math.log(1 + c);
         Integer o = own.get(w);
-        if (o != null) lc = Math.max(lc, Math.log(1 + o * 20000.0));
+        if (o != null) lc = Math.max(lc, Math.log(1 + o * (o >= 2 ? 20000.0 : 3000.0)));
         return lc;
     }
 
@@ -995,15 +998,19 @@ public class VoiceIME extends InputMethodService {
             for (int i = 0; i < SN; i++) sugg[i].setText("");
             return;
         }
-        String c1 = prev.length() > 0 ? prev : "^";
-        String c2 = prev.length() > 0 ? (prev2.length() > 0 ? prev2 : "^") : "";
+        String[] kc = kctx();
+        boolean noCtx = prev.length() > 0 && kc[1].length() == 0;
+        String c1 = prev.length() == 0 ? "^" : kc[1];
+        String c2 = prev.length() == 0 ? "" : (kc[0].length() > 0 ? kc[0] : "^");
 
         // bağlama göre aday puanları
         java.util.HashMap<String, Double> ctx = new java.util.HashMap<String, Double>();
-        if (c2.length() > 0) addSucc(lmTri.get(c2 + " " + c1), 1.0, ctx);
-        addSucc(lmBi.get(c1), 0.45, ctx);
-        if (c2.length() > 0) addPersonal("", 5.0, ctx, triples, c2 + " " + c1);
-        addPersonal("", 3.0, ctx, pairs, c1);
+        if (!noCtx) {
+            if (c2.length() > 0) addSucc(lmTri.get(c2 + " " + c1), 1.0, ctx);
+            addSucc(lmBi.get(c1), 0.45, ctx);
+            if (c2.length() > 0) addPersonal("", 5.0, ctx, triples, c2 + " " + c1);
+            addPersonal("", 3.0, ctx, pairs, c1);
+        }
 
         String[] out = new String[SN];
         java.util.Arrays.fill(out, "");
@@ -1180,6 +1187,16 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** Bağlama göre aday puanları (2 önceki kelime). */
+    /** Bağlam için kullanılacak son iki bilinen kelime; bilinmeyen (yanlış yazılmış) kelimeler atlanır. */
+    private String[] kctx() {
+        if (prev.length() == 0) return new String[]{"", ""};
+        java.util.ArrayList<String> k = new java.util.ArrayList<String>();
+        for (String w : new String[]{prev3, prev2, prev}) if (w.length() > 0 && isKnown(w)) k.add(w);
+        String b = k.size() > 0 ? k.get(k.size() - 1) : "";
+        String a = k.size() > 1 ? k.get(k.size() - 2) : "";
+        return new String[]{a, b};
+    }
+
     private java.util.HashMap<String, Double> contextFor(String a, String b) {
         java.util.HashMap<String, Double> ctx = new java.util.HashMap<String, Double>();
         String c1 = b.length() > 0 ? b : "^";
@@ -1216,7 +1233,9 @@ public class VoiceIME extends InputMethodService {
     private String fixCurrent() {
         if (noFix || !lmReady || cur.length() < 3) return null;
         String p = cur.toString().toLowerCase(TR);
-        java.util.HashMap<String, Double> ctx = contextFor(prev2, prev);
+        String[] kc = kctx();
+        java.util.HashMap<String, Double> ctx = (prev.length() > 0 && kc[1].length() == 0)
+                ? new java.util.HashMap<String, Double>() : contextFor(kc[0], kc[1]);
         java.util.List<Object[]> r = decode(p, ctx, true, false);
         if (r.isEmpty()) return null;
         String w = (String) r.get(0)[0];
@@ -1530,27 +1549,23 @@ public class VoiceIME extends InputMethodService {
     }
 
     private void buildEmoji() {
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setOrientation(LinearLayout.HORIZONTAL);
-        keysBox.addView(tabs, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
-        for (int i = 0; i < EMO_TAB.length; i++) {
-            final int idx = i;
-            TextView t = mkKey(EMO_TAB[i], 1f, idx == emoCat, new Runnable() {
-                @Override public void run() { emoCat = idx; buildKeys(); }
-            }, false);
-            t.setTextSize(19);
-            tabs.addView(t);
-        }
         java.util.List<String> list;
         if (emoCat == 0) list = recentEmojis();
         else list = java.util.Arrays.asList(EMO[emoCat].split(" "));
         ScrollView sv = new ScrollView(this);
         sv.setVerticalScrollBarEnabled(false);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         sv.addView(col, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView head = label(14, Color.parseColor("#8E8E93"));
+        String[] names = {"SON KULLANILANLAR", "YÜZLER", "EL VE İNSANLAR", "KALP VE İŞARETLER",
+                "HAYVAN VE DOĞA", "YİYECEK VE İÇECEK", "SPOR VE ULAŞIM", "EŞYALAR"};
+        head.setText(names[Math.max(0, Math.min(names.length - 1, emoCat))]);
+        head.setTypeface(Typeface.DEFAULT_BOLD);
+        head.setPadding(dp(10), dp(8), 0, dp(2));
+        col.addView(head);
         int per = 8;
         if (list.isEmpty()) {
             TextView hint = label(16, Color.parseColor("#AEAEB2"));
@@ -1565,7 +1580,8 @@ public class VoiceIME extends InputMethodService {
             for (int j = 0; j < per; j++) {
                 TextView e = new TextView(this);
                 e.setGravity(Gravity.CENTER);
-                e.setTextSize(25);
+                e.setTextSize(28);
+                e.setIncludeFontPadding(false);
                 if (i + j < list.size()) {
                     final String em = list.get(i + j);
                     e.setText(em);
@@ -1579,16 +1595,21 @@ public class VoiceIME extends InputMethodService {
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
         }
         keysBox.addView(sv, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(196)));
 
         LinearLayout b = newRow();
-        b.addView(mkKey("ABC", 1.6f, true, new Runnable() {
+        b.addView(mkKey("ABC", 1.5f, true, new Runnable() {
             @Override public void run() { page = 0; buildKeys(); }
         }, false));
-        b.addView(mkKey("Türkçe", 5f, false, new Runnable() {
-            @Override public void run() { doSpace(); }
-        }, false));
-        b.addView(mkKey("⌫", 1.6f, true, new Runnable() {
+        for (int i = 0; i < EMO_TAB.length; i++) {
+            final int idx = i;
+            TextView t = mkKey(EMO_TAB[i], 1f, idx == emoCat, new Runnable() {
+                @Override public void run() { emoCat = idx; buildKeys(); }
+            }, false);
+            t.setTextSize(18);
+            b.addView(t);
+        }
+        b.addView(mkKey("⌫", 1.5f, true, new Runnable() {
             @Override public void run() { doDelete(); }
         }, true));
     }
@@ -2109,13 +2130,9 @@ public class VoiceIME extends InputMethodService {
 
     private void onMicTap() {
         if (password) return;
-        if (listening) {
+        if (listening || wanted) {
             // Durdur: o ana kadar söylenenler yazılır
-            wanted = false;
-            if (recognizer != null) {
-                try { recognizer.stopListening(); } catch (Exception ignored) { }
-            }
-            setStatus("Yazılıyor…");
+            stopDictation();
         } else {
             begin();
         }
@@ -2124,6 +2141,10 @@ public class VoiceIME extends InputMethodService {
     private void begin() {
         silenceRetries = 0;
         lastPartial = "";
+        spokeOnce = false;
+        lastSpeechAt = android.os.SystemClock.uptimeMillis();
+        h.removeCallbacks(idleCheck);
+        h.postDelayed(idleCheck, 1000);
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             lastErr = "mikrofon izni yok";
@@ -2264,10 +2285,60 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** Aynı tanıyıcıyla, ekranı değiştirmeden yeniden dinlemeye başlar. */
+    private long lastSpeechAt = 0;
+    private boolean spokeOnce = false;
+
+    /** Mikrofonu tamamen kapatır (ekran ve ses dahil). */
+    private void finishMic() {
+        h.removeCallbacks(idleCheck);
+        listening = false;
+        wanted = false;
+        session++;
+        stopPulse();
+        paintMic(false);
+        destroyRecognizer();
+        muteBeep(false);
+        setPartial("");
+        setStatus("Konuşmak için mikrofona dokun");
+    }
+
+    /** Dokunarak veya sessizlik nedeniyle durdur: o ana kadar duyulanı yaz, sonra kapat. */
+    private void stopDictation() {
+        h.removeCallbacks(idleCheck);
+        if (!listening && !wanted) return;
+        wanted = false;
+        final int mine = session;
+        if (recognizer != null) {
+            try { recognizer.stopListening(); } catch (Exception ignored) { }
+        }
+        setStatus("Yazılıyor…");
+        h.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (mine == session && listening) {
+                    if (lastPartial.length() > 0) { commitFinal(lastPartial); lastPartial = ""; }
+                    finishMic();
+                }
+            }
+        }, 1300);
+    }
+
+    private final Runnable idleCheck = new Runnable() {
+        @Override public void run() {
+            if (!wanted) return;
+            long idle = android.os.SystemClock.uptimeMillis() - lastSpeechAt;
+            if (idle > (spokeOnce ? 6000 : 10000)) {
+                stopDictation();
+                return;
+            }
+            h.postDelayed(this, 1000);
+        }
+    };
+
     private void restartInPlace(final int mySession, long delay) {
         h.postDelayed(new Runnable() {
             @Override public void run() {
-                if (!wanted || mySession != session) return;
+                if (mySession != session) return;
+                if (!wanted) { finishMic(); return; }
                 if (recognizer == null || recIntent == null) { startRecognizer(); return; }
                 lastPartial = "";
                 try {
@@ -2342,6 +2413,7 @@ public class VoiceIME extends InputMethodService {
     }
 
     private void stopAll() {
+        h.removeCallbacks(idleCheck);
         wanted = false;
         muteBeep(false);
         listening = false;
@@ -2391,7 +2463,12 @@ public class VoiceIME extends InputMethodService {
         public void onPartialResults(Bundle partialResults) {
             if (mySession != session) return;
             String s = first(partialResults);
-            if (s != null) { setPartial(s); lastPartial = s; }
+            if (s != null) {
+                setPartial(s);
+                lastPartial = s;
+                spokeOnce = true;
+                lastSpeechAt = android.os.SystemClock.uptimeMillis();
+            }
         }
 
         @Override
@@ -2404,6 +2481,8 @@ public class VoiceIME extends InputMethodService {
                 commitFinal(s);
                 rememberGood();
                 silenceRetries = 0;
+                spokeOnce = true;
+                lastSpeechAt = android.os.SystemClock.uptimeMillis();
             }
             lastPartial = "";
             lastErr = "-";
@@ -2449,7 +2528,7 @@ public class VoiceIME extends InputMethodService {
         }
         lastErr = errName(error);
         boolean quiet0 = error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH;
-        if (wanted && quiet0 && (salvaged || silenceRetries < 8)) {
+        if (wanted && quiet0 && (salvaged || silenceRetries < 40)) {
             if (!salvaged) silenceRetries++;
             setPartial("");
             restartInPlace(mySession, 60);
@@ -2568,11 +2647,35 @@ public class VoiceIME extends InputMethodService {
             sp = sp.substring(0, 1).toUpperCase(new Locale("tr", "TR")) + sp.substring(1);
         }
         String prefix = (!b.isEmpty() && !Character.isWhitespace(b.charAt(b.length() - 1))) ? " " : "";
+        sp = withEnding(sp);
         markOwn();
         ic.commitText(prefix + sp + " ", 1);
         cur.setLength(0);
+        prev = "";
+        prev2 = "";
+        prev3 = "";
+        hist.clear();
         learnText(sp);
+        if (shift == 0) { shift = 1; refreshLabels(); }
         updateSuggestions();
+    }
+
+    private static final java.util.regex.Pattern QWORD = java.util.regex.Pattern.compile(
+            "(^|\\s)(ne|neden|niçin|niye|nasıl|nerede|nereye|nereden|neresi|kim|kimin|kime|kimi|kiminle|kaç|kaçta|kaçıncı|hangi|hangisi|neler|nelerdir|ne zaman|kaça|kaçı)(\\s|$)");
+    private static final java.util.regex.Pattern QSUFFIX = java.util.regex.Pattern.compile(
+            "(^|\\s)\\p{L}*\\s?m[ıiuü](yım|yim|yum|yüm|sın|sin|sun|sün|yız|yiz|yuz|yüz|sınız|siniz|sunuz|sünüz|ydı|ydi|ydu|ydü|ymış|ymiş|ymuş|ymüş|yor|yorsun|yoruz|yorlar|y|dır|dir|dur|dür|ş|şsın|şsin|ştı|ştı|ştu|ştü|lar|ler)?$");
+
+    /** Konuşulan cümle noktalama ile bitmediyse nokta (soruysa soru işareti) ekler. */
+    private String withEnding(String sp) {
+        if (sp.isEmpty()) return sp;
+        char last = sp.charAt(sp.length() - 1);
+        if (last == '.' || last == '?' || last == '!' || last == '…' || last == ':' || last == ';') return sp;
+        String low = sp.toLowerCase(TR);
+        String[] ws = low.split("\\s+");
+        String lastW = ws[ws.length - 1];
+        boolean q = QWORD.matcher(low).find()
+                || (lastW.length() <= 12 && lastW.matches("m[ıiuü](yım|yim|yum|yüm|sın|sin|sun|sün|yız|yiz|yuz|yüz|sınız|siniz|sunuz|sünüz|ydı|ydi|ydu|ydü|y)?"));
+        return sp + (q ? "?" : ".");
     }
 
     /** Noktalama: önceki boşluğu silip işareti yazar. */
