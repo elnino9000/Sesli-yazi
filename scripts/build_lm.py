@@ -35,12 +35,13 @@ def ok(w):
 
 vocab_list = [(w, c) for w, c in uni.items() if c >= 3 and ok(w)]
 vocab_list.sort(key=lambda x: -x[1])
-vocab_list = vocab_list[:80000]
+vocab_all = [(w, c) for w, c in vocab_list if c >= 4][:250000]
+vocab_list = vocab_list[:100000]
 vocab = set(w for w, _ in vocab_list)
 with open(os.path.join(out, "words_tr.txt"), "w", encoding="utf-8") as f:
-    for w, c in vocab_list:
+    for w, c in vocab_all:
         f.write("%s\t%d\n" % (w, c))
-print("sözlük:", len(vocab_list))
+print("sözlük:", len(vocab_all), "n-gram sözlüğü:", len(vocab_list))
 
 # ---- 2. geçiş: ikili ve üçlü diziler
 bi_path = os.path.join(tmp, "bi.txt")
@@ -106,13 +107,17 @@ def build(path, name, minc, topk, minTotal, maxCtx):
 build(bi_path, "lm_bi.txt", 2, 8, 5, 60000)
 build(tri_path, "lm_tri.txt", 2, 5, 4, 140000)
 
-# ---------------------------------------------------------------- ölçüm
-# Ayrılmış (eğitimde kullanılmayan) cümlelerde tahmin başarısını ölçer ve ağırlıkları dener.
+# ---------------------------------------------------------------- ölçüm ve ayar
+# Eğitimde kullanılmayan cümlelerde (1) sonraki kelime, (2) yanlış basılan harflerden
+# doğru kelimeyi bulma başarısını ölçer; en iyi ağırlıkları params.txt'ye yazar.
 if len(sys.argv) > 3:
-    import math, itertools, random
-    uni_c = dict(vocab_list)
+    import math, random, bisect
+    uni_c = dict(vocab_all)
+    for w, c in vocab_list:
+        uni_c.setdefault(w, c)
     mx = max(uni_c.values())
     ulog = math.log(1 + mx)
+    allw = sorted(uni_c)
 
     def load_lm(name):
         m = {}
@@ -130,87 +135,176 @@ if len(sys.argv) > 3:
 
     bi = load_lm("lm_bi.txt")
     tri = load_lm("lm_tri.txt")
-    vocab_sorted = sorted(vocab)
-    by_prefix = {}
-    for w in sorted(vocab_sorted, key=lambda x: -uni_c[x]):
-        for n in (1, 2):
-            if len(w) > n:
-                lst = by_prefix.setdefault(w[:n], [])
-                if len(lst) < 400:
+
+    # Türkçe Q klavye komşulukları (Java ile aynı)
+    ROWS = ["qwertyuıopğü", "asdfghjklşi", "zxcvbnmöç"]
+    NB = {}
+    def addnb(a, b):
+        NB.setdefault(a, set()).add(b); NB.setdefault(b, set()).add(a)
+    for r in ROWS:
+        for i in range(len(r) - 1):
+            addnb(r[i], r[i + 1])
+    for u, l in ((ROWS[0], ROWS[1]), (ROWS[1], ROWS[2])):
+        for j in range(len(l)):
+            for jj in (j, j + 1):
+                if jj < len(u):
+                    addnb(l[j], u[jj])
+    LETTERS = "abcçdefgğhıijklmnoöprsştuüvyz"
+
+    # 3-4 harfli önekler için sık kelime listesi
+    top_by_prefix = {}
+    for w in sorted(allw, key=lambda x: -uni_c[x]):
+        for n in (3, 4):
+            if len(w) >= n:
+                lst = top_by_prefix.setdefault(w[:n], [])
+                if len(lst) < 60:
                     lst.append(w)
 
-    tests = []
-    with open(sys.argv[3], encoding='utf-8', errors='ignore') as f:
-        for line in f:
-            for ws in segments(line):
-                ws = [w if w in vocab else None for w in ws]
-                if len(ws) >= 3:
-                    tests.append(ws)
-    random.seed(7)
-    random.shuffle(tests)
-    tests = tests[:12000]
-    print("ölçüm cümlesi:", len(tests))
+    def range_words(v, cap):
+        if len(v) in (3, 4):
+            return top_by_prefix.get(v, [])
+        i = bisect.bisect_left(allw, v)
+        res = []
+        while i < len(allw) and allw[i].startswith(v) and len(res) < cap:
+            res.append(allw[i]); i += 1
+        return res
 
-    def ctx_scores(p2, p1, wbi, wtri):
+    def ctx_scores(p2, p1):
         acc = {}
         if p2 is not None:
             e = tri.get(p2 + " " + p1)
             if e:
                 for w, c in e[0]:
-                    acc[w] = acc.get(w, 0) + wtri * c / e[1]
+                    acc[w] = acc.get(w, 0) + c / e[1]
         e = bi.get(p1)
         if e:
             for w, c in e[0]:
-                acc[w] = acc.get(w, 0) + wbi * c / e[1]
+                acc[w] = acc.get(w, 0) + 0.45 * c / e[1]
         return acc
 
-    def evaluate(wbi, wtri, kctx, wuni, nprefix):
-        hit = tot = 0
-        for ws in (tests if nprefix == 0 else tests[:1500]):
-            toks = ["^"] + ws
-            for i in range(1, len(toks)):
-                actual = toks[i]
-                if actual is None:
-                    continue
-                p1 = toks[i - 1]
-                if p1 is None:
-                    continue
-                p2 = toks[i - 2] if i >= 2 else None
-                if i == 1:
-                    p2 = None
-                if i >= 2 and p2 is None:
-                    continue
-                if i >= 2 and toks[i - 2] is None:
-                    continue
-                acc = ctx_scores(p2, p1, wbi, wtri)
-                if nprefix == 0:
-                    cand = acc
-                    scored = sorted(cand.items(), key=lambda x: -x[1])[:3]
-                    top = [w for w, _ in scored]
-                else:
-                    if len(actual) <= nprefix:
-                        continue
-                    pre = actual[:nprefix]
-                    cands = by_prefix.get(pre, [])
-                    best = []
-                    for w in cands:
-                        s = wuni * math.log(1 + uni_c[w]) / ulog + kctx * acc.get(w, 0)
-                        best.append((s, w))
-                    best.sort(reverse=True)
-                    top = [w for _, w in best[:3]]
-                tot += 1
-                if actual in top:
-                    hit += 1
-        return hit, tot
+    KCTX, WUNI = 12.0, 0.2
 
-    h0, t0 = evaluate(0.45, 1.0, 3.0, 0.6, 0)
-    print("SONRAKİ KELİME ilk3 isabet: %.1f%% (%d/%d)" % (100.0 * h0 / max(1, t0), h0, t0))
-    for npfx in (1, 2):
-        best = None
-        for wbi, kctx, wuni in itertools.product((0.3, 0.6), (8.0, 16.0, 32.0, 64.0), (0.05, 0.15, 0.3)):
-            h1, t1 = evaluate(wbi, 1.0, kctx, wuni, npfx)
-            r = h1 / max(1, t1)
-            if best is None or r > best[0]:
-                best = (r, wbi, kctx, wuni)
-            print("  önek=%d wbi=%.1f k=%.1f wuni=%.1f -> %.1f%%" % (npfx, wbi, kctx, wuni, 100 * r))
-        print("EN İYİ önek=%d: %.1f%% wbi=%.1f k=%.1f wuni=%.1f" % (npfx, 100 * best[0], best[1], best[2], best[3]))
+    def variants(p):
+        n = len(p)
+        out_v = []
+        for i in range(n):
+            for ch in NB.get(p[i], ()):
+                out_v.append((p[:i] + ch + p[i + 1:], 'sub'))
+        for i in range(n - 1):
+            if p[i] != p[i + 1]:
+                out_v.append((p[:i] + p[i + 1] + p[i] + p[i + 2:], 'tr'))
+        if n >= 4:
+            for i in range(n):
+                out_v.append((p[:i] + p[i + 1:], 'del'))
+        for i in range(n + 1):
+            for ch in LETTERS:
+                out_v.append((p[:i] + ch + p[i:], 'ins'))
+        return out_v
+
+    def predict(p, acc, pen, fix):
+        best = {}
+        def consider(w, cost):
+            s = WUNI * math.log(1 + uni_c[w]) / ulog + KCTX * acc.get(w, 0) - 0.002 * len(w) - cost
+            if w not in best or s > best[w]:
+                best[w] = s
+        if p in uni_c:
+            consider(p, 0.0)
+        for w in range_words(p, 400):
+            if len(w) > len(p):
+                consider(w, 0.0)
+        if fix and len(p) >= 3:
+            for v, kind in variants(p):
+                if len(v) < 3:
+                    continue
+                for w in range_words(v, 120):
+                    consider(w, pen[kind])
+        return [w for w, _ in sorted(best.items(), key=lambda x: -x[1])[:3]]
+
+    TESTS = []
+    with open(sys.argv[3], encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            for ws in segments(line):
+                ws = [w if w in vocab else None for w in ws]
+                if len(ws) >= 3:
+                    TESTS.append(ws)
+    random.seed(7)
+    random.shuffle(TESTS)
+    print("ölçüm cümlesi:", len(TESTS))
+
+    # ---- (1) sonraki kelime (harf yazılmadan)
+    hit = tot = 0
+    for ws in TESTS[:6000]:
+        toks = ["^"] + ws
+        for i in range(1, len(toks)):
+            if toks[i] is None or toks[i - 1] is None:
+                continue
+            p2 = toks[i - 2] if i >= 2 else None
+            if i >= 2 and p2 is None:
+                continue
+            acc = ctx_scores(p2, toks[i - 1])
+            top = [w for w, _ in sorted(acc.items(), key=lambda x: -x[1])[:3]]
+            tot += 1
+            hit += toks[i] in top
+    print("SONRAKİ KELİME ilk3 isabet: %.1f%% (%d/%d)" % (100.0 * hit / max(1, tot), hit, tot))
+
+    # ---- (2) yanlış basış düzeltme
+    def corrupt(w, rnd):
+        n = len(w)
+        kind = rnd.choice(['sub', 'sub', 'tr', 'del', 'ins'])
+        i = rnd.randrange(1, n) if n > 1 else 0
+        if kind == 'sub' and w[i] in NB:
+            return w[:i] + rnd.choice(sorted(NB[w[i]])) + w[i + 1:]
+        if kind == 'tr' and i + 1 < n and w[i] != w[i + 1]:
+            return w[:i] + w[i + 1] + w[i] + w[i + 2:]
+        if kind == 'del' and n >= 5:
+            return w[:i] + w[i + 1:]
+        if kind == 'ins':
+            return w[:i] + rnd.choice(sorted(NB.get(w[i], {w[i]}))) + w[i:]
+        return None
+
+    rnd = random.Random(11)
+    cases = []
+    for ws in TESTS[:4000]:
+        toks = ["^"] + ws
+        for i in range(2, len(toks)):
+            a = toks[i]
+            if a is None or len(a) < 4 or toks[i - 1] is None or toks[i - 2] is None:
+                continue
+            t = corrupt(a, rnd)
+            if t is None or t == a:
+                continue
+            acc = ctx_scores(toks[i - 2], toks[i - 1])
+            cases.append((a, t, acc))
+            if len(cases) >= 2500:
+                break
+        if len(cases) >= 2500:
+            break
+    print("yanlış basış örneği:", len(cases))
+
+    def rate(pen, fix, mode):
+        h = 0
+        for a, t, acc in cases:
+            if mode == 'full':
+                p = t
+            elif mode == 'part':
+                p = t[:max(3, int(len(t) * 0.7))]
+            else:
+                p = a
+            h += a in predict(p, acc, pen, fix)
+        return 100.0 * h / len(cases)
+
+    base_full = rate(None, False, 'full')
+    base_part = rate(None, False, 'part')
+    print("DÜZELTME YOK : yanlış-tam %.1f%%  yanlış-yarım %.1f%%  doğru-tam %.1f%%" %
+          (base_full, base_part, rate(None, False, 'clean')))
+    bestp = None
+    for pu in (0.1, 0.25, 0.5, 1.0, 2.0):
+        pen = {'sub': pu, 'tr': pu * 1.2, 'del': pu * 1.6, 'ins': pu * 1.6}
+        f = rate(pen, True, 'full'); pa = rate(pen, True, 'part'); c = rate(pen, True, 'clean')
+        score = f + 0.5 * pa + c
+        print("  pen=%.2f: yanlış-tam %.1f%%  yanlış-yarım %.1f%%  doğru-tam %.1f%%" % (pu, f, pa, c))
+        if bestp is None or score > bestp[0]:
+            bestp = (score, pu, f, pa, c)
+    print("EN İYİ pen=%.2f: yanlış-tam %.1f%% yarım %.1f%% doğru %.1f%%" % bestp[1:])
+    with open(os.path.join(out, "params.txt"), "w") as f:
+        f.write("pen=%.3f\n" % bestp[1])
