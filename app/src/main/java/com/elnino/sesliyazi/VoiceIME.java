@@ -709,6 +709,10 @@ public class VoiceIME extends InputMethodService {
     private boolean centersOk = false;
     private float tapX, tapY;
     private boolean tapFresh = false;
+    // kişisel kalibrasyon: parmağın sistematik kayması (tuş genişliği biriminde), 3 bölge (sol/orta/sağ)
+    private final float[] bX = new float[3], bY = new float[3];
+    private final int[] bN = new int[3];
+    private final java.util.ArrayList<float[]> tapPts = new java.util.ArrayList<float[]>();
 
     private void ensureCenters() {
         if (centersOk || letterViews.size() != 32) return;
@@ -726,13 +730,66 @@ public class VoiceIME extends InputMethodService {
         centersOk = true;
     }
 
+    private int zoneOf(int idx) {
+        float left = kcx[0] - refW / 2f;
+        int z = (int) (3f * (kcx[idx] - left) / (12f * refW));
+        return z < 0 ? 0 : (z > 2 ? 2 : z);
+    }
+
+    /** Doğru bilinen bir kelimenin dokunuşlarından parmak kaymasını öğrenir. */
+    private void learnBias(String truth) {
+        ensureCenters();
+        if (!centersOk || truth.length() < 3 || tapPts.size() != truth.length()) return;
+        for (int i = 0; i < truth.length(); i++) {
+            float[] pt = tapPts.get(i);
+            int idx = L32.indexOf(truth.charAt(i));
+            if (pt == null || idx < 0) return;
+        }
+        for (int i = 0; i < truth.length(); i++) {
+            float[] pt = tapPts.get(i);
+            int idx = L32.indexOf(truth.charAt(i));
+            float dx = (pt[0] - kcx[idx]) / refW, dy = (pt[1] - kcy[idx]) / refW;
+            if (Math.abs(dx) > 0.9f || Math.abs(dy) > 0.9f) continue;
+            int z = zoneOf(idx);
+            float a = Math.max(0.01f, 1f / (bN[z] + 1));
+            bX[z] += (dx - bX[z]) * a;
+            bY[z] += (dy - bY[z]) * a;
+            bX[z] = Math.max(-0.35f, Math.min(0.35f, bX[z]));
+            bY[z] = Math.max(-0.35f, Math.min(0.35f, bY[z]));
+            if (bN[z] < 100000) bN[z]++;
+        }
+        if (++biasSaveCnt % 25 == 0) saveBias();
+    }
+
+    private int biasSaveCnt = 0;
+
+    private void saveBias() {
+        StringBuilder sb = new StringBuilder();
+        for (int z = 0; z < 3; z++) sb.append(bX[z]).append(',').append(bY[z]).append(',').append(bN[z]).append(';');
+        getSharedPreferences("sesli", MODE_PRIVATE).edit().putString("bias", sb.toString()).apply();
+    }
+
+    private void loadBias() {
+        try {
+            String[] zs = getSharedPreferences("sesli", MODE_PRIVATE).getString("bias", "").split(";");
+            for (int z = 0; z < 3 && z < zs.length; z++) {
+                String[] f = zs[z].split(",");
+                if (f.length < 3) continue;
+                bX[z] = Float.parseFloat(f[0]);
+                bY[z] = Float.parseFloat(f[1]);
+                bN[z] = Integer.parseInt(f[2]);
+            }
+        } catch (Throwable ignored) { }
+    }
+
     private float[] tapVec(float x, float y) {
         ensureCenters();
         if (!centersOk) return null;
         float[] v = new float[32];
         double inv = 1.0 / (2 * tSig * tSig * refW * refW);
         for (int i = 0; i < 32; i++) {
-            float dx = x - kcx[i], dy = y - kcy[i];
+            int z = zoneOf(i);
+            float dx = x - kcx[i] - bX[z] * refW, dy = y - kcy[i] - bY[z] * refW;
             v[i] = (float) (-(dx * dx + dy * dy) * inv);
         }
         return v;
@@ -1318,6 +1375,7 @@ public class VoiceIME extends InputMethodService {
         autoLearn = null;
         autoDel = 0;
         if (cur.length() > 0) {
+            if (w.length() == cur.length()) learnBias(w.toLowerCase(TR));
             recordCorr(cur.toString(), w);
             ic.deleteSurroundingText(cur.length(), 0);
         }
@@ -1728,8 +1786,9 @@ public class VoiceIME extends InputMethodService {
             return;
         }
         if (letter) {
-            if (cur.length() == 0) taps.clear();
+            if (cur.length() == 0) { taps.clear(); tapPts.clear(); }
             taps.add(fresh ? tapVec(tapX, tapY) : null);
+            tapPts.add(fresh ? new float[]{tapX, tapY} : null);
             cur.append(s);
             if (shift == 1) { shift = 0; refreshLabels(); }
         } else {
@@ -1778,6 +1837,8 @@ public class VoiceIME extends InputMethodService {
         } else {
             ic.commitText(" ", 1);
             finalWord = cur.toString();
+            String lw = finalWord.toLowerCase(TR);
+            if (lw.length() >= 3 && isKnown(lw) && !corrWord.containsKey(lw)) learnBias(lw);
         }
         leaveStatus();
         learn(finalWord);
@@ -1835,6 +1896,7 @@ public class VoiceIME extends InputMethodService {
         if (cur.length() > 0) {
             cur.setLength(cur.length() - 1);
             if (!taps.isEmpty()) taps.remove(taps.size() - 1);
+            if (!tapPts.isEmpty()) tapPts.remove(tapPts.size() - 1);
         }
         sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL);
         updateSuggestions();
@@ -1953,6 +2015,7 @@ public class VoiceIME extends InputMethodService {
         super.onStartInputView(info, restarting);
         h.removeCallbacks(autoStart);
         if (importChanged()) loadPersonal();
+        loadBias();
 
         int cls = info.inputType & InputType.TYPE_MASK_CLASS;
         int var = info.inputType & InputType.TYPE_MASK_VARIATION;
@@ -1999,6 +2062,7 @@ public class VoiceIME extends InputMethodService {
         h.removeCallbacks(autoStart);
         stopAll();
         saveWords();
+        saveBias();
     }
 
     @Override

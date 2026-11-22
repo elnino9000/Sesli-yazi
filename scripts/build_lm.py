@@ -732,6 +732,35 @@ if len(sys.argv) > 3:
             TMU = float(mg)
         if TMK == 99.0 and pb <= 0.5:
             TMK = float(mg)
+    # ---- kişisel kalibrasyon: parmağın her zaman biraz sağa/aşağı basması gibi sistematik kayma
+    def tap_vec_b(tx, ty, sm, bx, by):
+        return {ch: -((tx - x - bx) ** 2 + (ty - y - by) ** 2) / (2 * sm * sm) for ch, (x, y) in KCP.items()}
+    rndb = random.Random(5)
+    for bias in ((0.30, 0.25), (-0.25, 0.35)):
+        rows_b = []
+        for hist, w in SAMP:
+            rows_b.append((hist, w, [(KCP[ch][0] + bias[0] + rndb.gauss(0, 0.5), KCP[ch][1] + bias[1] + rndb.gauss(0, 0.5)) for ch in w]))
+        # ilk 120 kelimeden kayma tahmini (kelimeler doğru yazılmış sayılır)
+        sx = sy = n_t = 0
+        for hist, w, taps in rows_b[:120]:
+            for ch, (x, y) in zip(w, taps):
+                sx += x - KCP[ch][0]; sy += y - KCP[ch][1]; n_t += 1
+        ebx, eby = sx / n_t, sy / n_t
+        res = {}
+        for tag, (bx, by) in (("kalibrasyonsuz", (0.0, 0.0)), ("kalibreli", (ebx, eby))):
+            t1 = t3 = nn = 0
+            for hist, w, taps in rows_b[120:]:
+                lls = [tap_vec_b(x, y, TSM, bx, by) for x, y in taps]
+                acc = ctx_list(hist[-3:])
+                cands = [(P, sc_) for P, sc_ in beam(lls)[:25] if P in uni_c]
+                sc = sorted(((TWP * math.log(1 + uni_c[P]) + TKC * acc.get(P, 0) - 0.002 * len(P) + t, P) for P, t in cands), reverse=True)
+                top = [x for _, x in sc]
+                nn += 1
+                t1 += bool(top) and top[0] == w
+                t3 += w in top[:3]
+            res[tag] = (100.0 * t1 / max(1, nn), 100.0 * t3 / max(1, nn))
+        print("KİŞİSEL KALİBRASYON (kayma %.2f,%.2f tuş; tahmin %.2f,%.2f): ilk1 %.1f%% -> %.1f%%, ilk3 %.1f%% -> %.1f%%" % (
+            bias[0], bias[1], ebx, eby, res["kalibrasyonsuz"][0], res["kalibreli"][0], res["kalibrasyonsuz"][1], res["kalibreli"][1]))
     print("DOKUNMA SEÇİLEN: sigma=%.2f prior=%.1f ctx=%.0f marj_bilinmeyen=%.0f marj_bilinen=%.0f" % (TSM, TWP, TKC, TMU, TMK))
     with open(os.path.join(out, "params.txt"), "w") as f:
         f.write("pen=%.3f\ndia=%.3f\nreal=%.3f\nretro=%.3f\n" % (P['pen'], P['dia'], P['m_real'], min(P['m_retro'], 99.0)))
