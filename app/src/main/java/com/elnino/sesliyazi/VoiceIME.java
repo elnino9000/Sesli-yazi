@@ -2638,6 +2638,10 @@ public class VoiceIME extends InputMethodService {
     }
 
     private String pickBest(Bundle b) {
+        try { return pickBest0(b); } catch (Throwable t) { reportErr(t); return first(b); }
+    }
+
+    private String pickBest0(Bundle b) {
         java.util.ArrayList<String> l = b == null ? null
                 : b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
         if (l == null || l.isEmpty()) return null;
@@ -2659,21 +2663,25 @@ public class VoiceIME extends InputMethodService {
     }
 
     private static final String[][] SPOKEN = {
-        {"\\s*\\b(soru işareti)\\b", "?"},
-        {"\\s*\\b(ünlem işareti|ünlem)\\b", "!"},
-        {"\\s*\\b(virgül)\\b", ","},
-        {"\\s*\\b(iki nokta üst üste)\\b", ":"},
-        {"\\s*\\b(yeni satır|alt satır|satır başı)\\b\\s*", "\n"},
-        {"\\s*\\bnokta\\s*$", "."}};
+        {"\\s*(?<!\\p{L})(soru işareti)(?!\\p{L})", "?"},
+        {"\\s*(?<!\\p{L})(ünlem işareti|ünlem)(?!\\p{L})", "!"},
+        {"\\s*(?<!\\p{L})(virgül)(?!\\p{L})", ","},
+        {"\\s*(?<!\\p{L})(iki nokta üst üste)(?!\\p{L})", ":"},
+        {"\\s*(?<!\\p{L})(yeni satır|alt satır|satır başı)(?!\\p{L})\\s*", "\n"},
+        {"\\s*(?<!\\p{L})nokta\\s*$", "."}};
 
     /** "virgül", "soru işareti", "yeni satır" gibi söylenen noktalama komutlarını simgeye çevirir. */
     private String spokenPunct(String sp) {
         String r = sp;
-        for (String[] pr : SPOKEN) {
-            r = java.util.regex.Pattern.compile(pr[0], java.util.regex.Pattern.CASE_INSENSITIVE
-                    | java.util.regex.Pattern.UNICODE_CASE | java.util.regex.Pattern.UNICODE_CHARACTER_CLASS).matcher(r).replaceAll(java.util.regex.Matcher.quoteReplacement(pr[1]));
+        try {
+            for (String[] pr : SPOKEN) {
+                r = java.util.regex.Pattern.compile(pr[0], java.util.regex.Pattern.CASE_INSENSITIVE
+                        | java.util.regex.Pattern.UNICODE_CASE).matcher(r).replaceAll(java.util.regex.Matcher.quoteReplacement(pr[1]));
+            }
+            return r.trim();
+        } catch (Throwable t) {
+            return sp;
         }
-        return r.trim();
     }
 
     /** Sansürlenmiş kelimeleri (s*** gibi) sözlükten en olası kelimeyle tamamlar. */
@@ -3150,7 +3158,13 @@ public class VoiceIME extends InputMethodService {
     }
 
     private void commitFinal(String spoken) {
-        try { commitFinal0(spoken); } catch (Throwable t) { reportErr(t); }
+        try { commitFinal0(spoken); } catch (Throwable t) {
+            reportErr(t);
+            try {
+                InputConnection ic2 = getCurrentInputConnection();
+                if (ic2 != null && spoken != null && spoken.trim().length() > 0) ic2.commitText(spoken.trim() + " ", 1);
+            } catch (Throwable ignored) { }
+        }
     }
 
     private void pickSuggestion(int i) {
