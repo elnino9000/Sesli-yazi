@@ -1421,8 +1421,17 @@ public class VoiceIME extends InputMethodService {
         float[][] ll = tapsFor(p, false);
         double lit = touchOf(p, ll, p.length());
         boolean known = isKnown(p);
+        Integer oc = own.get(p);
+        if (oc != null && oc >= 2) return null;          // sen daha önce yazdın: dokunma
+        Integer wc = words.get(p);
+        double need = tMu;
+        if (known) {
+            // doğru yazılmış olabilir: yalnızca çok güçlü kanıtta değiştir
+            need = Math.max(tMk, (wc != null && wc >= 3000) ? 9.0 : 6.0);
+            if (oc != null) need += 3.0;
+        }
         double sl = known ? totalScore(p, lit, p.length(), ctx) : lit;
-        return (s1 - sl >= (known ? tMk : tMu)) ? w : null;
+        return (s1 - sl >= need) ? w : null;
     }
 
 
@@ -2012,7 +2021,7 @@ public class VoiceIME extends InputMethodService {
                 recordCorr(orig, fix);
                 cur.setLength(0);
                 cur.append(fix);
-            } else if (cur.length() >= 8 && trySegment(ic, s)) {
+            } else if (cur.length() >= 8 && trySegment(ic, ".?!".contains(s) ? s + " " : s)) {
                 autoRestore = null;
                 autoDel = 0;
                 leaveStatus();
@@ -2021,7 +2030,13 @@ public class VoiceIME extends InputMethodService {
                 return;
             }
         }
-        ic.commitText(s, 1);
+        boolean endP = s.equals(".") || s.equals("?") || s.equals("!");
+        boolean autoSp = false;
+        if (endP) {
+            CharSequence pc = ic.getTextBeforeCursor(1, 0);
+            autoSp = pc != null && pc.length() == 1 && Character.isLetter(pc.charAt(0));
+        }
+        ic.commitText(autoSp ? s + " " : s, 1);
         leaveStatus();
         if (apos && cur.length() > 0) {
             // özel isim + ek (Ahmet'e): isim bağlamda kalsın, ek öğrenilmesin/düzeltilmesin
@@ -2067,6 +2082,13 @@ public class VoiceIME extends InputMethodService {
             updateSuggestions();
             return;
         }
+        if (cur.length() == 0) {
+            CharSequence t3 = ic.getTextBeforeCursor(2, 0);
+            if (t3 != null && t3.length() == 2 && ".?!".indexOf(t3.charAt(0)) >= 0 && t3.charAt(1) == ' ') {
+                if (page == 0 && shift != 2) { shift = 1; refreshLabels(); }
+                return;   // noktadan sonra zaten boşluk var
+            }
+        }
         String wPrev = prev, wPrev2 = prev2, wPrev3 = prev3;
         String fix = fixCurrent();
         if (fix == null && trySegment(ic, " ")) {
@@ -2096,10 +2118,18 @@ public class VoiceIME extends InputMethodService {
         leaveStatus();
         learn(finalWord);
         cur.setLength(0);
+        {
+            CharSequence t2 = ic.getTextBeforeCursor(2, 0);
+            if (page == 0 && shift != 2 && t2 != null && t2.length() == 2
+                    && ".?!".indexOf(t2.charAt(0)) >= 0 && t2.charAt(1) == ' ') {
+                shift = 1;
+                refreshLabels();
+            }
+        }
 
         // geriye dönük: önceki kelimeyi, yeni yazılan kelimeye bakarak sına
         String fw = finalWord.toLowerCase(TR);
-        if (!noFix && lmReady && wPrev.length() >= 3 && fw.length() >= 1) {
+        if (!noFix && lmReady && wPrev.length() >= 3 && fw.length() >= 1 && !isKnown(wPrev)) {
             java.util.HashMap<String, Double> ctxW = contextFor(wPrev3, wPrev2);
             Object[] r = bestFix(wPrev, ctxW, fw);
             if (r != null && (Double) r[1] > retroM) {
