@@ -2044,9 +2044,60 @@ public class VoiceIME extends InputMethodService {
         }, false);
         emo.setForeground(new SmileyDrawable());
         b.addView(emo);
-        b.addView(mkKey("Lidya", 5f, false, new Runnable() {
+        TextView spaceKey = mkKey("Lidya", 5f, false, new Runnable() {
             @Override public void run() { doSpace(); }
-        }, false));
+        }, false);
+        // boşluk tuşunda parmağı sağa/sola kaydır: imleç harf harf gezinir; kısa dokunuş boşluk yazar
+        spaceKey.setOnTouchListener(new View.OnTouchListener() {
+            float startX, lastStepX;
+            boolean moved;
+            @Override public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        startX = lastStepX = e.getRawX();
+                        moved = false;
+                        v.setAlpha(0.7f);
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float step = dp(13);
+                        float dx = e.getRawX() - lastStepX;
+                        if (!moved && Math.abs(e.getRawX() - startX) < dp(10)) return true;
+                        while (Math.abs(dx) >= step) {
+                            moved = true;
+                            int code = dx > 0 ? KeyEvent.KEYCODE_DPAD_RIGHT : KeyEvent.KEYCODE_DPAD_LEFT;
+                            markOwn();
+                            sendDownUpKeyEvents(code);
+                            lastStepX += dx > 0 ? step : -step;
+                            dx = e.getRawX() - lastStepX;
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                        v.setAlpha(1f);
+                        if (moved) {
+                            cur.setLength(0);
+                            taps.clear();
+                            tapPts.clear();
+                            autoRestore = null;
+                            autoLearn = null;
+                            autoDel = 0;
+                            syncFromText();
+                            updateSuggestions();
+                        } else {
+                            tapX = e.getRawX();
+                            tapY = e.getRawY();
+                            doSpace();
+                        }
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        v.setAlpha(1f);
+                        return true;
+                    default:
+                        return true;
+                }
+            }
+        });
+        b.addView(spaceKey);
         b.addView(mkKey(".", 1f, false, new Runnable() {
             @Override public void run() { typeKey("."); }
         }, false));
