@@ -1792,10 +1792,24 @@ public class VoiceIME extends InputMethodService {
         autoDel = 0;
         boolean fresh = tapFresh;
         tapFresh = false;
-        ic.commitText(s, 1);
-        leaveStatus();
         boolean letter = Character.isLetter(s.charAt(0));
         boolean apos = s.equals("'") || s.equals("\u2019");
+        if (!letter && !apos && !afterApos && cur.length() >= 3) {
+            // nokta, soru işareti vb. de kelimeyi bitirir: yazım düzeltmesi burada da çalışsın
+            String fix = fixCurrent();
+            if (fix != null) {
+                String orig = cur.toString();
+                if (Character.isUpperCase(orig.charAt(0)))
+                    fix = fix.substring(0, 1).toUpperCase(TR) + fix.substring(1);
+                ic.deleteSurroundingText(orig.length(), 0);
+                ic.commitText(fix, 1);
+                recordCorr(orig, fix);
+                cur.setLength(0);
+                cur.append(fix);
+            }
+        }
+        ic.commitText(s, 1);
+        leaveStatus();
         if (apos && cur.length() > 0) {
             // özel isim + ek (Ahmet'e): isim bağlamda kalsın, ek öğrenilmesin/düzeltilmesin
             prev3 = prev2;
