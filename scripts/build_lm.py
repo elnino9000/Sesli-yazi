@@ -247,64 +247,157 @@ if len(sys.argv) > 3:
             hit += toks[i] in top
     print("SONRAKİ KELİME ilk3 isabet: %.1f%% (%d/%d)" % (100.0 * hit / max(1, tot), hit, tot))
 
-    # ---- (2) yanlış basış düzeltme
-    def corrupt(w, rnd):
+    # ---- (2) gerçek yazım hatası düzeltme hattı: bilinmeyen kelime, bağlama uymayan geçerli kelime
+    #          ve iki yanyana kelimeye bakarak geriye dönük düzeltme
+    DIA = {'c': '\u00e7', 'g': '\u011f', 'i': '\u0131', 'o': '\u00f6', 's': '\u015f', 'u': '\u00fc'}
+    ASCIIFY = {v: k for k, v in DIA.items()}
+    import itertools
+
+    def dia_combos(p):
+        pos = [i for i, ch in enumerate(p) if ch in DIA]
+        res = []
+        if len(pos) > 6:
+            return res
+        for r in range(1, len(pos) + 1):
+            for sub in itertools.combinations(pos, r):
+                lst = list(p)
+                for i in sub:
+                    lst[i] = DIA[lst[i]]
+                res.append(("".join(lst), r))
+        return res
+
+    EXACT = {}
+    def exact_variants(t):
+        """t'ye yakın, sözlükte olan kelimeler: (kelime, tür, değişen harf sayısı)"""
+        r = EXACT.get(t)
+        if r is not None:
+            return r
+        r = []
+        seen = set()
+        for v, kind in variants(t):
+            if v in uni_c and uni_c[v] >= 100 and v != t and v not in seen:
+                seen.add(v); r.append((v, kind, 1))
+        for v, n in dia_combos(t):
+            if v in uni_c and uni_c[v] >= 100 and v != t and v not in seen:
+                seen.add(v); r.append((v, 'dia', n))
+        EXACT[t] = r
+        return r
+
+    def usc(w):
+        return WUNI * math.log(1 + uni_c[w]) / ulog if w in uni_c else -1.0
+
+    def pair_p(nxt, w):
+        e = bi.get(w)
+        if not e or nxt is None:
+            return 0.0
+        for x, c in e[0]:
+            if x == nxt:
+                return c / e[1]
+        return 0.0
+
+    def best_fix(t, acc, nxt, P):
+        """(en iyi kelime, puan farkı). Bilinmeyen kelimede fark çok büyük sayılır."""
+        known = t in uni_c
+        st = (usc(t) + KCTX * acc.get(t, 0) + KCTX * pair_p(nxt, t)) if known else None
+        best = None
+        for v, kind, n in exact_variants(t):
+            cost = P['dia'] * n if kind == 'dia' else P['pen'] * (1.0 if kind == 'sub' else 1.2 if kind == 'tr' else 1.6)
+            sv = usc(v) + KCTX * acc.get(v, 0) + KCTX * pair_p(nxt, v) - cost
+            if best is None or sv > best[1]:
+                best = (v, sv)
+        if best is None:
+            return None, 0.0
+        if st is None:
+            return best[0], 99.0
+        return best[0], best[1] - st
+
+    def corrupt_word(w, rnd):
         n = len(w)
-        kind = rnd.choice(['sub', 'sub', 'tr', 'del', 'ins'])
+        kinds = ['sub', 'sub', 'tr', 'del', 'ins']
+        if any(ch in ASCIIFY for ch in w):
+            kinds += ['asc', 'asc', 'asc']
+        kind = rnd.choice(kinds)
         i = rnd.randrange(1, n) if n > 1 else 0
+        if kind == 'asc':
+            t = "".join(ASCIIFY.get(ch, ch) for ch in w)
+            return t if t != w else None
         if kind == 'sub' and w[i] in NB:
             return w[:i] + rnd.choice(sorted(NB[w[i]])) + w[i + 1:]
         if kind == 'tr' and i + 1 < n and w[i] != w[i + 1]:
             return w[:i] + w[i + 1] + w[i] + w[i + 2:]
-        if kind == 'del' and n >= 5:
+        if kind == 'del' and n >= 4:
             return w[:i] + w[i + 1:]
         if kind == 'ins':
             return w[:i] + rnd.choice(sorted(NB.get(w[i], {w[i]}))) + w[i:]
         return None
 
-    rnd = random.Random(11)
-    cases = []
-    for ws in TESTS[:4000]:
-        toks = ["^"] + ws
-        for i in range(2, len(toks)):
-            a = toks[i]
-            if a is None or len(a) < 4 or toks[i - 1] is None or toks[i - 2] is None:
-                continue
-            t = corrupt(a, rnd)
-            if t is None or t == a:
-                continue
-            acc = ctx_scores(toks[i - 2], toks[i - 1])
-            cases.append((a, t, acc))
-            if len(cases) >= 2500:
-                break
-        if len(cases) >= 2500:
+    rnd = random.Random(5)
+    SENT = []
+    for ws in TESTS[:3000]:
+        if None in ws or len(ws) < 3 or len(ws) > 12:
+            continue
+        typed = []
+        for w in ws:
+            t = None
+            if len(w) >= 3 and rnd.random() < 0.2:
+                t = corrupt_word(w, rnd)
+            typed.append(t if (t is not None and t != w) else w)
+        SENT.append((ws, typed))
+        if len(SENT) >= 700:
             break
-    print("yanlış basış örneği:", len(cases))
+    print("hat örnek cümle:", len(SENT))
 
-    def rate(pen, fix, mode):
-        h = 0
-        for a, t, acc in cases:
-            if mode == 'full':
-                p = t
-            elif mode == 'part':
-                p = t[:max(3, int(len(t) * 0.7))]
-            else:
-                p = a
-            h += a in predict(p, acc, pen, fix)
-        return 100.0 * h / len(cases)
+    def run(P, use_real, use_retro):
+        ok_c = n_c = bad_clean = n_clean = 0
+        for ws, typed in SENT:
+            out_w = []
+            toks = ["^"]
+            for i, t in enumerate(typed):
+                p1 = toks[-1]
+                p2 = toks[-2] if len(toks) >= 2 else None
+                acc = ctx_scores(p2, p1)
+                fixed = t
+                if t not in uni_c:
+                    v, d = best_fix(t, acc, None, P)
+                    if v: fixed = v
+                elif use_real and len(t) >= 3:
+                    v, d = best_fix(t, acc, None, P)
+                    if v and d > P['m_real'] and acc.get(v, 0) > 0:
+                        fixed = v
+                toks.append(fixed)
+                # geriye dönük: önceki kelimeyi yeni kelimeye göre sına
+                if use_retro and len(toks) >= 3:
+                    wprev = toks[-2]
+                    pp1 = toks[-3]
+                    pp2 = toks[-4] if len(toks) >= 4 else None
+                    acc2 = ctx_scores(pp2, pp1)
+                    v, d = best_fix(wprev, acc2, fixed, P)
+                    if v and d > P['m_retro'] and len(wprev) >= 3:
+                        toks[-2] = v
+            res = toks[1:]
+            for w, t, r in zip(ws, typed, res):
+                if t != w:
+                    n_c += 1; ok_c += (r == w)
+                else:
+                    n_clean += 1; bad_clean += (r != w)
+        return 100.0 * ok_c / max(1, n_c), 100.0 * bad_clean / max(1, n_clean), n_c, n_clean
 
-    base_full = rate(None, False, 'full')
-    base_part = rate(None, False, 'part')
-    print("DÜZELTME YOK : yanlış-tam %.1f%%  yanlış-yarım %.1f%%  doğru-tam %.1f%%" %
-          (base_full, base_part, rate(None, False, 'clean')))
-    bestp = None
-    for pu in (0.1, 0.25, 0.5, 1.0, 2.0):
-        pen = {'sub': pu, 'tr': pu * 1.2, 'del': pu * 1.6, 'ins': pu * 1.6}
-        f = rate(pen, True, 'full'); pa = rate(pen, True, 'part'); c = rate(pen, True, 'clean')
-        score = f + 0.5 * pa + c
-        print("  pen=%.2f: yanlış-tam %.1f%%  yanlış-yarım %.1f%%  doğru-tam %.1f%%" % (pu, f, pa, c))
-        if bestp is None or score > bestp[0]:
-            bestp = (score, pu, f, pa, c)
-    print("EN İYİ pen=%.2f: yanlış-tam %.1f%% yarım %.1f%% doğru %.1f%%" % bestp[1:])
+    base_ok = None
+    P0 = {'pen': 0.1, 'dia': 0.03, 'm_real': 1e9, 'm_retro': 1e9}
+    r0 = run(P0, False, False)
+    print("YALNIZ BİLİNMEYEN: hatalı kelimeyi doğru bulma %.1f%%  doğru kelimeyi bozma %.2f%%  (hatalı %d, doğru %d)" % r0)
+    best = None
+    for pen in (0.05, 0.1, 0.2):
+        for dia in (0.02, 0.05):
+            for mr in (0.4, 0.8, 1.6):
+                for mt in (0.4, 0.8, 1.6, 1e9):
+                    P = {'pen': pen, 'dia': dia, 'm_real': mr, 'm_retro': mt}
+                    ok, bad, nc, ncl = run(P, True, mt < 1e8)
+                    score = ok - 8.0 * bad
+                    print("  pen=%.2f dia=%.2f gerçek=%.1f geri=%s -> düzelt %.1f%%  bozma %.2f%%" % (pen, dia, mr, ("%.1f" % mt) if mt < 1e8 else "kapalı", ok, bad))
+                    if best is None or score > best[0]:
+                        best = (score, P, ok, bad)
+    print("EN İYİ:", best[1], "düzelt %.1f%% bozma %.2f%%" % (best[2], best[3]))
+    P = best[1]
     with open(os.path.join(out, "params.txt"), "w") as f:
-        f.write("pen=%.3f\n" % bestp[1])
+        f.write("pen=%.3f\ndia=%.3f\nreal=%.3f\nretro=%.3f\n" % (P['pen'], P['dia'], P['m_real'], min(P['m_retro'], 99.0)))

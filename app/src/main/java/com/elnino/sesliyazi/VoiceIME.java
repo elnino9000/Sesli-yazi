@@ -158,7 +158,10 @@ public class VoiceIME extends InputMethodService {
     private volatile java.util.HashMap<String, String[]> topPrefix = new java.util.HashMap<String, String[]>();
     private volatile double pen = 0.5;
     private boolean noFix = false;
-    private String autoOrig = null, autoFix = null;
+    private volatile double diaPen = 0.03, realM = 0.8, retroM = 0.8;
+    private int autoDel = 0;
+    private String autoRestore = null, autoLearn = null;
+    private String prev3 = "";
     private final java.util.LinkedList<String> recent = new java.util.LinkedList<String>();
 
     // Türkçe Q klavyede yan yana tuşlar (yanlış basış düzeltme için)
@@ -286,6 +289,9 @@ public class VoiceIME extends InputMethodService {
                         String pl;
                         while ((pl = pr.readLine()) != null) {
                             if (pl.startsWith("pen=")) pen = Double.parseDouble(pl.substring(4).trim());
+                            if (pl.startsWith("dia=")) diaPen = Double.parseDouble(pl.substring(4).trim());
+                            if (pl.startsWith("real=")) realM = Double.parseDouble(pl.substring(5).trim());
+                            if (pl.startsWith("retro=")) retroM = Double.parseDouble(pl.substring(6).trim());
                         }
                         pr.close();
                     } catch (Exception ignored) { }
@@ -373,6 +379,7 @@ public class VoiceIME extends InputMethodService {
         recent.remove(w);
         recent.add(w);
         while (recent.size() > 40) recent.removeFirst();
+        prev3 = prev2;
         prev2 = prev;
         prev = w;
         if (++learnCount % 6 == 0) saveWords();
@@ -416,6 +423,7 @@ public class VoiceIME extends InputMethodService {
         cur.setLength(0);
         prev = "";
         prev2 = "";
+        prev3 = "";
         if (ic == null) return;
         CharSequence cs = ic.getTextBeforeCursor(80, 0);
         if (cs == null) return;
@@ -553,7 +561,7 @@ public class VoiceIME extends InputMethodService {
                 for (String[] vk : variants(p)) {
                     String v = vk[0];
                     if (v.length() < 3) continue;
-                    double cost = vk[1].equals("sub") ? pen : vk[1].equals("tr") ? pen * 1.2 : pen * 1.6;
+                    double cost = costOf(vk);
                     for (String w : rangeWords(v, 120)) consider(best, w, cost, ctx);
                 }
             }
@@ -600,7 +608,13 @@ public class VoiceIME extends InputMethodService {
         return res;
     }
 
-    /** Yazılan kelimenin olası düzeltme biçimleri: {kelime, tür}. */
+    private static final java.util.HashMap<Character, Character> DIA = new java.util.HashMap<Character, Character>();
+    static {
+        DIA.put('c', '\u00e7'); DIA.put('g', '\u011f'); DIA.put('i', '\u0131');
+        DIA.put('o', '\u00f6'); DIA.put('s', '\u015f'); DIA.put('u', '\u00fc');
+    }
+
+    /** Yazılan kelimenin olası düzeltme biçimleri: {kelime, tür, değişen harf sayısı}. */
     private java.util.List<String[]> variants(String p) {
         java.util.ArrayList<String[]> r = new java.util.ArrayList<String[]>();
         int n = p.length();
@@ -608,45 +622,109 @@ public class VoiceIME extends InputMethodService {
             String nb = NB.get(p.charAt(i));
             if (nb == null) continue;
             for (int k = 0; k < nb.length(); k++)
-                r.add(new String[]{p.substring(0, i) + nb.charAt(k) + p.substring(i + 1), "sub"});
+                r.add(new String[]{p.substring(0, i) + nb.charAt(k) + p.substring(i + 1), "sub", "1"});
         }
         for (int i = 0; i + 1 < n; i++) {
             if (p.charAt(i) != p.charAt(i + 1))
-                r.add(new String[]{p.substring(0, i) + p.charAt(i + 1) + p.charAt(i) + p.substring(i + 2), "tr"});
+                r.add(new String[]{p.substring(0, i) + p.charAt(i + 1) + p.charAt(i) + p.substring(i + 2), "tr", "1"});
         }
         if (n >= 4) {
-            for (int i = 0; i < n; i++) r.add(new String[]{p.substring(0, i) + p.substring(i + 1), "del"});
+            for (int i = 0; i < n; i++) r.add(new String[]{p.substring(0, i) + p.substring(i + 1), "del", "1"});
         }
         for (int i = 0; i <= n; i++) {
             for (int k = 0; k < LETTERS.length(); k++)
-                r.add(new String[]{p.substring(0, i) + LETTERS.charAt(k) + p.substring(i), "ins"});
+                r.add(new String[]{p.substring(0, i) + LETTERS.charAt(k) + p.substring(i), "ins", "1"});
+        }
+        // Türkçe harfsiz yazım: c->ç g->ğ i->ı o->ö s->ş u->ü (hepsinin birleşimleri)
+        java.util.ArrayList<Integer> pos = new java.util.ArrayList<Integer>();
+        for (int i = 0; i < n; i++) if (DIA.containsKey(p.charAt(i))) pos.add(i);
+        if (pos.size() <= 6) {
+            for (int mask = 1; mask < (1 << pos.size()); mask++) {
+                char[] cs = p.toCharArray();
+                int cnt = 0;
+                for (int b = 0; b < pos.size(); b++) {
+                    if ((mask & (1 << b)) != 0) { cs[pos.get(b)] = DIA.get(cs[pos.get(b)]); cnt++; }
+                }
+                r.add(new String[]{new String(cs), "dia", String.valueOf(cnt)});
+            }
         }
         return r;
     }
 
-    /** Boşluğa basılınca: sözlükte olmayan kelime için eminsek düzeltilmişini döndürür. */
-    private String autoFixWord() {
-        if (noFix || !lmReady || cur.length() < 3) return null;
-        String p = cur.toString().toLowerCase(TR);
-        if (words.containsKey(p) || own.containsKey(p)) return null;
+    private double costOf(String[] vk) {
+        String k = vk[1];
+        if (k.equals("dia")) return diaPen * Integer.parseInt(vk[2]);
+        return k.equals("sub") ? pen : k.equals("tr") ? pen * 1.2 : pen * 1.6;
+    }
+
+    private boolean isKnown(String w) {
+        Integer c = words.get(w);
+        return (c != null && c > 0) || own.containsKey(w);
+    }
+
+    private double pairP(String nxt, String w) {
+        if (nxt == null) return 0;
+        String line = lmBi.get(w);
+        if (line == null) return 0;
+        String[] parts = line.split(",");
+        double total = 0, hit = 0;
+        for (String part : parts) {
+            int c = part.lastIndexOf(':');
+            if (c <= 0) continue;
+            int cnt;
+            try { cnt = Integer.parseInt(part.substring(c + 1)); } catch (Exception e) { continue; }
+            total += cnt;
+            if (part.substring(0, c).equals(nxt)) hit = cnt;
+        }
+        return total > 0 ? hit / total : 0;
+    }
+
+    /** Bağlama göre aday puanları (2 önceki kelime). */
+    private java.util.HashMap<String, Double> contextFor(String a, String b) {
         java.util.HashMap<String, Double> ctx = new java.util.HashMap<String, Double>();
-        String c1 = prev.length() > 0 ? prev : "^";
-        String c2 = prev.length() > 0 ? (prev2.length() > 0 ? prev2 : "^") : "";
+        String c1 = b.length() > 0 ? b : "^";
+        String c2 = b.length() > 0 ? (a.length() > 0 ? a : "^") : "";
         if (c2.length() > 0) addSucc(lmTri.get(c2 + " " + c1), 1.0, ctx);
         addSucc(lmBi.get(c1), 0.45, ctx);
-        String bestW = null;
-        double bestS = -1e9;
-        for (String[] vk : variants(p)) {
+        return ctx;
+    }
+
+    /** Yazılan kelime t için en iyi sözlük kelimesi ve puan farkı: {kelime, fark}. */
+    private Object[] bestFix(String t, java.util.HashMap<String, Double> ctx, String nxt) {
+        boolean known = isKnown(t);
+        double st = 0;
+        if (known) {
+            Double ct = ctx.get(t);
+            st = uniScore(t) * 0.2 + 12.0 * (ct == null ? 0 : ct) + 12.0 * pairP(nxt, t);
+        }
+        String bw = null;
+        double bs = -1e9;
+        for (String[] vk : variants(t)) {
             String v = vk[0];
-            if (v.length() < 3 || !words.containsKey(v)) continue;
+            if (v.length() < 2 || v.equals(t)) continue;
             Integer cnt = words.get(v);
             if (cnt == null || cnt < 100) continue;
-            double cost = vk[1].equals("sub") ? pen : vk[1].equals("tr") ? pen * 1.2 : pen * 1.6;
-            Double cs = ctx.get(v);
-            double sc = uniScore(v) * 0.2 + (cs == null ? 0 : cs * 12.0) - cost;
-            if (sc > bestS) { bestS = sc; bestW = v; }
+            Double cv = ctx.get(v);
+            double sv = uniScore(v) * 0.2 + 12.0 * (cv == null ? 0 : cv) + 12.0 * pairP(nxt, v) - costOf(vk);
+            if (sv > bs) { bs = sv; bw = v; }
         }
-        return bestW;
+        if (bw == null) return null;
+        return new Object[]{bw, known ? Double.valueOf(bs - st) : Double.valueOf(99.0)};
+    }
+
+    /** Boşluğa basılınca o anki kelime için düzeltme: bilinmeyen kelime veya bağlama uymayan kelime. */
+    private String fixCurrent() {
+        if (noFix || !lmReady || cur.length() < 3) return null;
+        String p = cur.toString().toLowerCase(TR);
+        java.util.HashMap<String, Double> ctx = contextFor(prev2, prev);
+        Object[] r = bestFix(p, ctx, null);
+        if (r == null) return null;
+        String w = (String) r[0];
+        double d = (Double) r[1];
+        if (!isKnown(p)) return w;
+        Double cw = ctx.get(w);
+        if (d > realM && cw != null && cw > 0) return w;
+        return null;
     }
 
     private void rank(String[] out, double[] sc, String w, double s) {
@@ -668,8 +746,9 @@ public class VoiceIME extends InputMethodService {
         if (ic == null) return;
         syncFromText();   // yanlış silmemek için gerçek durumu oku
         markOwn();
-        autoOrig = null;
-        autoFix = null;
+        autoRestore = null;
+        autoLearn = null;
+        autoDel = 0;
         if (cur.length() > 0) ic.deleteSurroundingText(cur.length(), 0);
         ic.commitText(w + " ", 1);
         cur.setLength(0);
@@ -918,8 +997,9 @@ public class VoiceIME extends InputMethodService {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
         markOwn();
-        autoOrig = null;
-        autoFix = null;
+        autoRestore = null;
+        autoLearn = null;
+        autoDel = 0;
         ic.commitText(s, 1);
         leaveStatus();
         boolean letter = Character.isLetter(s.charAt(0));
@@ -942,43 +1022,72 @@ public class VoiceIME extends InputMethodService {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
         markOwn();
-        autoOrig = null;
-        autoFix = null;
-        String fix = autoFixWord();
+        autoRestore = null;
+        autoLearn = null;
+        autoDel = 0;
+        String wPrev = prev, wPrev2 = prev2, wPrev3 = prev3;
+        String fix = fixCurrent();
+        String finalWord;
         if (fix != null) {
             String orig = cur.toString();
             if (Character.isUpperCase(orig.charAt(0)))
                 fix = fix.substring(0, 1).toUpperCase(TR) + fix.substring(1);
             ic.deleteSurroundingText(orig.length(), 0);
             ic.commitText(fix + " ", 1);
-            autoOrig = orig;
-            autoFix = fix;
-            cur.setLength(0);
-            cur.append(fix);
+            autoRestore = orig;
+            autoLearn = orig.toLowerCase(TR);
+            autoDel = fix.length() + 1;
+            finalWord = fix;
         } else {
             ic.commitText(" ", 1);
+            finalWord = cur.toString();
         }
         leaveStatus();
-        learn(cur.toString());
+        learn(finalWord);
         cur.setLength(0);
+
+        // geriye dönük: önceki kelimeyi, yeni yazılan kelimeye bakarak sına
+        String fw = finalWord.toLowerCase(TR);
+        if (!noFix && lmReady && wPrev.length() >= 3 && fw.length() >= 1) {
+            java.util.HashMap<String, Double> ctxW = contextFor(wPrev3, wPrev2);
+            Object[] r = bestFix(wPrev, ctxW, fw);
+            if (r != null && (Double) r[1] > retroM) {
+                String rep = (String) r[0];
+                String segLow = wPrev + " " + fw + " ";
+                CharSequence tail = ic.getTextBeforeCursor(segLow.length(), 0);
+                if (tail != null && tail.toString().toLowerCase(TR).equals(segLow)) {
+                    String seg = tail.toString();
+                    if (Character.isUpperCase(seg.charAt(0)))
+                        rep = rep.substring(0, 1).toUpperCase(TR) + rep.substring(1);
+                    String nw = rep + seg.substring(wPrev.length());
+                    ic.deleteSurroundingText(seg.length(), 0);
+                    ic.commitText(nw, 1);
+                    autoRestore = seg;
+                    autoDel = nw.length();
+                    autoLearn = wPrev;
+                    prev2 = rep.toLowerCase(TR);
+                }
+            }
+        }
         updateSuggestions();
     }
 
     private void doDelete() {
         markOwn();
         InputConnection ic = getCurrentInputConnection();
-        if (autoFix != null && autoOrig != null && ic != null) {
+        if (autoRestore != null && autoDel > 0 && ic != null) {
             // otomatik düzeltmeyi geri al: yazdığın haline döner
-            ic.deleteSurroundingText(autoFix.length() + 1, 0);
-            ic.commitText(autoOrig, 1);
-            String o = autoOrig.toLowerCase(TR);
-            Integer c = own.get(o);
-            own.put(o, (c == null ? 0 : c) + 2);   // bir daha düzeltme
-            if (!words.containsKey(o)) words.put(o, 0);
-            cur.setLength(0);
-            cur.append(autoOrig);
-            autoOrig = null;
-            autoFix = null;
+            ic.deleteSurroundingText(autoDel, 0);
+            ic.commitText(autoRestore, 1);
+            if (autoLearn != null && isWord(autoLearn)) {
+                Integer c = own.get(autoLearn);
+                own.put(autoLearn, (c == null ? 0 : c) + 2);   // bir daha düzeltme
+                if (!words.containsKey(autoLearn)) words.put(autoLearn, 0);
+            }
+            autoRestore = null;
+            autoLearn = null;
+            autoDel = 0;
+            syncFromText();
             updateSuggestions();
             return;
         }
@@ -1102,8 +1211,9 @@ public class VoiceIME extends InputMethodService {
                 || var == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 || var == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS
                 || var == InputType.TYPE_TEXT_VARIATION_FILTER;
-        autoOrig = null;
-        autoFix = null;
+        autoRestore = null;
+        autoLearn = null;
+        autoDel = 0;
         if (password) {
             stopAll();
             setStatus("Şifre kutusunda ses kapalı, elle yaz");
