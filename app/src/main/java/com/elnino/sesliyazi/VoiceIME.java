@@ -1230,6 +1230,142 @@ public class VoiceIME extends InputMethodService {
     }
 
     /** Boşluğa basılınca o anki kelime için düzeltme: dokunma izi + sıklık + bağlam. */
+
+    // ------------------------------------------------ yapışık / hatalı yazılmış birden çok kelime
+
+    /** Boşluksuz yazılmış uzun diziyi 2-4 kelimeye böler (harf hatalarını ve fazladan bir harfi tolere eder). */
+    private String[] segment(String p) {
+        int n = p.length();
+        if (!lmReady || n < 8 || n > 28) return null;
+        float[][] ll = tapsFor(p, false);
+        final int MAXW = 16;
+        // her başlangıç için olası kelimeler: {kelime, değer, dokunma, bitiş}
+        java.util.ArrayList<java.util.ArrayList<Object[]>> cand = new java.util.ArrayList<java.util.ArrayList<Object[]>>();
+        for (int i = 0; i < n; i++) {
+            java.util.ArrayList<Object[]> cl = new java.util.ArrayList<Object[]>();
+            String[] bp = new String[]{""};
+            double[] bs = new double[]{0};
+            int bn = 1;
+            for (int k = 0; k < Math.min(MAXW, n - i) && bn > 0; k++) {
+                int[] ord = topLetters(ll[i + k], 6);
+                String[] np = new String[bn * 6];
+                double[] ns = new double[bn * 6];
+                int nn = 0;
+                for (int b = 0; b < bn; b++) {
+                    for (int j = 0; j < 6; j++) {
+                        double l = ll[i + k][ord[j]];
+                        if (l < -4.0 && j > 0) break;
+                        String q = bp[b] + L32.charAt(ord[j]);
+                        if (!hasPrefix(q)) continue;
+                        np[nn] = q;
+                        ns[nn] = bs[b] + l;
+                        nn++;
+                    }
+                }
+                if (nn == 0) { bn = 0; break; }
+                final double[] nsf = ns;
+                Integer[] ix = new Integer[nn];
+                for (int j = 0; j < nn; j++) ix[j] = j;
+                java.util.Arrays.sort(ix, new java.util.Comparator<Integer>() {
+                    @Override public int compare(Integer a, Integer b) { return Double.compare(nsf[b], nsf[a]); }
+                });
+                int keep = Math.min(30, nn);
+                bp = new String[keep];
+                bs = new double[keep];
+                for (int j = 0; j < keep; j++) { bp[j] = np[ix[j]]; bs[j] = ns[ix[j]]; }
+                bn = keep;
+                for (int b = 0; b < bn; b++) {
+                    String q = bp[b];
+                    Integer wc = words.get(q);
+                    if (wc == null && !own.containsKey(q)) continue;
+                    if (q.length() < 3 && (wc == null || wc < 50000)) continue;
+                    double v = bs[b] + tWp * priorOf(q);
+                    cl.add(new Object[]{q, v, bs[b], i + k + 1});
+                }
+            }
+            java.util.Collections.sort(cl, new java.util.Comparator<Object[]>() {
+                @Override public int compare(Object[] a, Object[] b) { return Double.compare((Double) b[1], (Double) a[1]); }
+            });
+            while (cl.size() > 8) cl.remove(cl.size() - 1);
+            cand.add(cl);
+        }
+        // durum: {kelime listesi, puan, dokunma toplamı, son kelime}
+        java.util.ArrayList<java.util.ArrayList<Object[]>> st = new java.util.ArrayList<java.util.ArrayList<Object[]>>();
+        for (int i = 0; i <= n; i++) st.add(new java.util.ArrayList<Object[]>());
+        st.get(0).add(new Object[]{new java.util.ArrayList<String>(), 0.0, 0.0, ""});
+        java.util.HashMap<String, java.util.HashMap<String, Double>> cc = new java.util.HashMap<String, java.util.HashMap<String, Double>>();
+        for (int pos = 0; pos < n; pos++) {
+            java.util.ArrayList<Object[]> cs = st.get(pos);
+            java.util.Collections.sort(cs, new java.util.Comparator<Object[]>() {
+                @Override public int compare(Object[] a, Object[] b) { return Double.compare((Double) b[1], (Double) a[1]); }
+            });
+            while (cs.size() > 25) cs.remove(cs.size() - 1);
+            for (Object[] state : cs) {
+                @SuppressWarnings("unchecked")
+                java.util.ArrayList<String> ws = (java.util.ArrayList<String>) state[0];
+                if (ws.size() >= 4) continue;
+                for (int skip = 0; skip <= (ws.isEmpty() ? 0 : 1); skip++) {
+                    int start = pos + skip;
+                    if (start >= n) continue;
+                    String last = (String) state[3];
+                    java.util.HashMap<String, Double> cm = null;
+                    if (last.length() > 0) {
+                        cm = cc.get(last);
+                        if (cm == null) { cm = contextFor("", last); cc.put(last, cm); }
+                    }
+                    for (Object[] c : cand.get(start)) {
+                        String w = (String) c[0];
+                        double sc = (Double) state[1] + (Double) c[1] - (w.length() <= 2 ? 3.0 : 1.5)
+                                - (skip == 1 ? 4.5 : 0.0);
+                        if (cm != null) { Double bb = cm.get(w); if (bb != null) sc += tKc * bb; }
+                        java.util.ArrayList<String> nw = new java.util.ArrayList<String>(ws);
+                        nw.add(w);
+                        st.get((Integer) c[3]).add(new Object[]{nw, sc,
+                                (Double) state[2] + (Double) c[2] - (skip == 1 ? 4.5 : 0.0), w});
+                    }
+                }
+            }
+        }
+        Object[] bestS = null;
+        for (Object[] state : st.get(n)) {
+            @SuppressWarnings("unchecked")
+            java.util.ArrayList<String> ws = (java.util.ArrayList<String>) state[0];
+            if (ws.size() < 2) continue;
+            if (bestS == null || (Double) state[1] > (Double) bestS[1]) bestS = state;
+        }
+        if (bestS == null) return null;
+        if ((Double) bestS[2] < -0.9 * n) return null;
+        @SuppressWarnings("unchecked")
+        java.util.ArrayList<String> ws = (java.util.ArrayList<String>) bestS[0];
+        return ws.toArray(new String[0]);
+    }
+
+    /** Uzun, tanınmayan, yapışık diziyi kelimelere bölüp yerine yazar. after: kelimeden sonra gelecek karakter. */
+    private boolean trySegment(InputConnection ic, String after) {
+        if (noFix || !lmReady || cur.length() < 8) return false;
+        String orig = cur.toString();
+        String lo = orig.toLowerCase(TR);
+        if (isKnown(lo)) return false;
+        String[] ws = segment(lo);
+        if (ws == null) return false;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < ws.length; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(ws[i]);
+        }
+        String joined = sb.toString();
+        if (Character.isUpperCase(orig.charAt(0)))
+            joined = joined.substring(0, 1).toUpperCase(TR) + joined.substring(1);
+        ic.deleteSurroundingText(orig.length(), 0);
+        ic.commitText(joined + after, 1);
+        autoRestore = orig;
+        autoLearn = null;
+        autoDel = joined.length() + after.length();
+        cur.setLength(0);
+        for (String w : ws) learn(w);
+        return true;
+    }
+
     private String fixCurrent() {
         if (noFix || !lmReady || cur.length() < 3) return null;
         String p = cur.toString().toLowerCase(TR);
@@ -1806,6 +1942,13 @@ public class VoiceIME extends InputMethodService {
                 recordCorr(orig, fix);
                 cur.setLength(0);
                 cur.append(fix);
+            } else if (cur.length() >= 8 && trySegment(ic, s)) {
+                autoRestore = null;
+                autoDel = 0;
+                leaveStatus();
+                if ((s.equals(".") || s.equals("?") || s.equals("!"))) { prev = ""; prev2 = ""; }
+                updateSuggestions();
+                return;
             }
         }
         ic.commitText(s, 1);
@@ -1856,6 +1999,11 @@ public class VoiceIME extends InputMethodService {
         }
         String wPrev = prev, wPrev2 = prev2, wPrev3 = prev3;
         String fix = fixCurrent();
+        if (fix == null && trySegment(ic, " ")) {
+            leaveStatus();
+            updateSuggestions();
+            return;
+        }
         String finalWord;
         if (fix != null) {
             String orig = cur.toString();
